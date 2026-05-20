@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "installCommand": "cd ../.. && pnpm install",
+  "buildCommand": "pnpm run build",
+  "outputDirectory": "dist",
+  "framework": null,
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.ts" }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Credentials", "value": "true" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ]
+}

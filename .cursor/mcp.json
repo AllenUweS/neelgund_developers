@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "play-store-mcp": {
+      "command": "java",
+      "args": [
+        "-jar",
+        "C:/tools/play-store-mcp/play-store-mcp-all.jar"
+      ],
+      "env": {
+        "PLAY_STORE_SERVICE_ACCOUNT_KEY_PATH": "C:/tools/play-store-mcp/service-account-key.json",
+        "PLAY_STORE_DEFAULT_TRACK": "internal"
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+.git
+.cursor
+.agents
+.canvas
+.config
+.local
+node_modules
+**/node_modules
+attached_assets
+artifacts/api-server
+supabase
+terminals
+agent-transcripts
+mcps

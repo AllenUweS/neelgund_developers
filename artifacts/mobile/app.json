@@ -1,0 +1,82 @@
+{
+  "expo": {
+    "name": "Neelgund Developers",
+    "slug": "mobile",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "mobile",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "bundleIdentifier": "com.neelgund.employeemonitor.iamjeevanhhh",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Neelgund Developers needs location access to track field activity and record daily travel routes even when the app is in the background.",
+        "NSLocationWhenInUseUsageDescription": "Neelgund Developers needs location access to track field activity and record daily travel routes."
+      }
+    },
+    "android": {
+      "package": "com.neelgund.employeemonitor.iamjeevanhhh",
+      "versionCode": 136,
+      "permissions": [
+        "ACCESS_BACKGROUND_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK"
+      ],
+      "blockedPermissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#1E4E8A"
+      }
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png",
+      "bundler": "metro",
+      "output": "static",
+      "meta": {
+        "viewport": "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+      },
+      "disallowZooming": true
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Neelgund to use your location to track field activity and record daily travel routes.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": false
+    },
+    "extra": {
+      "eas": {
+        "projectId": "ddb3fdc3-bcc4-4905-9926-d85ab78de981"
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+set -eu
+
+export EXPO_PUBLIC_SUPABASE_URL="https://ncngotyfdeqrziydrsvp.supabase.co"
+export EXPO_PUBLIC_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jbmdvdHlmZGVxcnppeWRyc3ZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3Mzc3NzAsImV4cCI6MjA5MjMxMzc3MH0.kYgWyUo7R7KYlbRL8TtyoXRw_iU8EXl75akzWHYLpQA"
+
+pnpm --dir artifacts/mobile exec expo export --platform web

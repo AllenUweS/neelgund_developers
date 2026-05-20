@@ -1,0 +1,96 @@
+// {
+//   "cli": {
+//     "version": ">= 10.0.0",
+//     "appVersionSource": "local"
+//   },
+//   "build": {
+//     "development": {
+//       "developmentClient": true,
+//       "distribution": "internal",
+//       "env": {
+//         "EXPO_PUBLIC_SUPABASE_URL": "https://ncngotyfdeqrziydrsvp.supabase.co",
+//         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jbmdvdHlmZGVxcnppeWRyc3ZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3Mzc3NzAsImV4cCI6MjA5MjMxMzc3MH0.kYgWyUo7R7KYlbRL8TtyoXRw_iU8EXl75akzWHYLpQA",
+//         // "EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN": "pk.eyJ1IjoiaWFtbGVldmFuaiIsImEiOiJjbW93ZnhqdmgwYWRoMnVzYXRpZmFyZXY2In0.qGcYINAzAW_DU0vl0kxVkg"
+//       }
+//     },
+//     "preview": {
+//       "distribution": "internal",
+//       "autoIncrement": true,
+//       "env": {
+//         "EXPO_PUBLIC_SUPABASE_URL": "https://ncngotyfdeqrziydrsvp.supabase.co",
+//         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jbmdvdHlmZGVxcnppeWRyc3ZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3Mzc3NzAsImV4cCI6MjA5MjMxMzc3MH0.kYgWyUo7R7KYlbRL8TtyoXRw_iU8EXl75akzWHYLpQA",
+//         // "EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN": "pk.eyJ1IjoiaWFtbGVldmFuaiIsImEiOiJjbW93ZnhqdmgwYWRoMnVzYXRpZmFyZXY2In0.qGcYINAzAW_DU0vl0kxVkg"
+//       },
+//       "android": {
+//         "buildType": "apk"
+//       }
+//     },
+//     "production": {
+//       "autoIncrement": true,
+//       "env": {
+//         "EXPO_PUBLIC_SUPABASE_URL": "https://ncngotyfdeqrziydrsvp.supabase.co",
+//         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jbmdvdHlmZGVxcnppeWRyc3ZwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3Mzc3NzAsImV4cCI6MjA5MjMxMzc3MH0.kYgWyUo7R7KYlbRL8TtyoXRw_iU8EXl75akzWHYLpQA",
+//         // "EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN": "pk.eyJ1IjoiaWFtbGVldmFuaiIsImEiOiJjbW93ZnhqdmgwYWRoMnVzYXRpZmFyZXY2In0.qGcYINAzAW_DU0vl0kxVkg"
+//       },
+//       "android": {
+//         "buildType": "app-bundle"
+//       }
+//     }
+//   },
+//   "submit": {
+//     "production": {
+//       "android": {
+//         "track": "internal"
+//       }
+//     }
+//   }
+// }
+
+
+{
+  "cli": {
+    "version": ">= 10.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://kotbcwrvgekmyzovejqv.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvdGJjd3J2Z2VrbXl6b3ZlanF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4ODQ5MzcsImV4cCI6MjA5NDQ2MDkzN30.86mv05ykNWQajZGA4_3YvKbmgKxr42P8BMdGMPqUrPQ",
+        "EXPO_PUBLIC_GOOGLE_MAPS_KEY": "AIzaSyB-SSGBVdho1IR5zhNUP2Dc5hPfrnnCdHw"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://kotbcwrvgekmyzovejqv.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvdGJjd3J2Z2VrbXl6b3ZlanF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4ODQ5MzcsImV4cCI6MjA5NDQ2MDkzN30.86mv05ykNWQajZGA4_3YvKbmgKxr42P8BMdGMPqUrPQ",
+        "EXPO_PUBLIC_GOOGLE_MAPS_KEY": "AIzaSyB-SSGBVdho1IR5zhNUP2Dc5hPfrnnCdHw"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": { 
+        "EXPO_PUBLIC_SUPABASE_URL": "https://kotbcwrvgekmyzovejqv.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtvdGJjd3J2Z2VrbXl6b3ZlanF2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4ODQ5MzcsImV4cCI6MjA5NDQ2MDkzN30.86mv05ykNWQajZGA4_3YvKbmgKxr42P8BMdGMPqUrPQ",
+        "EXPO_PUBLIC_GOOGLE_MAPS_KEY": "AIzaSyB-SSGBVdho1IR5zhNUP2Dc5hPfrnnCdHw"
+      },
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "track": "internal"
+      }
+    }
+  }
+}

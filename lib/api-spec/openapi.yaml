@@ -1,0 +1,1400 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: Neelgund Developers API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication
+  - name: users
+    description: User management
+  - name: leads
+    description: Lead management
+  - name: lead-meetings
+    description: Lead meeting scheduling
+  - name: lead-documents
+    description: Lead-specific documents
+  - name: location
+    description: Employee location tracking
+  - name: company-documents
+    description: Company document library
+  - name: leaderboard
+    description: Employee leaderboard
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List all users (admin only)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserProfile"
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Create a new user (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /users/{id}:
+    delete:
+      operationId: deleteUser
+      tags: [users]
+      summary: Delete a user (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /leads:
+    get:
+      operationId: listLeads
+      tags: [leads]
+      summary: List leads (all for admin/manager, own for employee)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of leads
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Lead"
+    post:
+      operationId: createLead
+      tags: [leads]
+      summary: Create a new lead
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeadRequest"
+      responses:
+        "201":
+          description: Lead created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lead"
+
+  /leads/{id}:
+    get:
+      operationId: getLead
+      tags: [leads]
+      summary: Get a lead by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lead detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lead"
+    put:
+      operationId: updateLead
+      tags: [leads]
+      summary: Update a lead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLeadRequest"
+      responses:
+        "200":
+          description: Lead updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Lead"
+    delete:
+      operationId: deleteLead
+      tags: [leads]
+      summary: Delete a lead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Lead deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /leads/{id}/meetings:
+    get:
+      operationId: listLeadMeetings
+      tags: [lead-meetings]
+      summary: List meetings for a lead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of meetings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeadMeeting"
+    post:
+      operationId: createLeadMeeting
+      tags: [lead-meetings]
+      summary: Schedule a meeting for a lead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeadMeetingRequest"
+      responses:
+        "201":
+          description: Meeting scheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeadMeeting"
+
+  /leads/{id}/meetings/{meetingId}:
+    put:
+      operationId: updateLeadMeeting
+      tags: [lead-meetings]
+      summary: Update a meeting
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: meetingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLeadMeetingRequest"
+      responses:
+        "200":
+          description: Meeting updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeadMeeting"
+    delete:
+      operationId: deleteLeadMeeting
+      tags: [lead-meetings]
+      summary: Delete a meeting
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: meetingId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Meeting deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /leads/{id}/documents:
+    get:
+      operationId: listLeadDocuments
+      tags: [lead-documents]
+      summary: List documents for a lead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of lead documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+    post:
+      operationId: addLeadDocument
+      tags: [lead-documents]
+      summary: Add a document to a lead
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddDocumentRequest"
+      responses:
+        "201":
+          description: Document added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+
+  /location/track:
+    post:
+      operationId: trackLocation
+      tags: [location]
+      summary: Record employee location point
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrackLocationRequest"
+      responses:
+        "201":
+          description: Location recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationPoint"
+
+  /location/trail:
+    get:
+      operationId: getLocationTrail
+      tags: [location]
+      summary: Get location trail for an employee on a date
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: employeeId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: matchRoads
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Location trail with optional matched route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationTrailResponse"
+
+  /location/heartbeat:
+    post:
+      operationId: locationHeartbeat
+      tags: [location]
+      summary: Lightweight heartbeat ping from mobile background task
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: Heartbeat acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatResponse"
+
+  /location/match-route:
+    post:
+      operationId: matchRoute
+      tags: [location]
+      summary: Match a raw GPS trail to roads using Mapbox Map Matching
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MatchRouteRequest"
+      responses:
+        "200":
+          description: Matched route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchRouteResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /location/employees/today:
+    get:
+      operationId: getEmployeesToday
+      tags: [location]
+      summary: Get latest location for all employees today
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Employee locations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EmployeeLocation"
+
+  /location/employees/date:
+    get:
+      operationId: getEmployeesByDate
+      tags: [location]
+      summary: Get latest location for all employees on a specific date (admin/manager only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: Date in YYYY-MM-DD format
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Employee locations for the specified date
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EmployeeLocation"
+        "400":
+          description: Invalid or missing date parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /location/zones:
+    get:
+      operationId: listZones
+      tags: [location]
+      summary: List all zones (admin/manager only)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of zones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Zone"
+    post:
+      operationId: createZone
+      tags: [location]
+      summary: Create a new zone (admin/manager only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateZoneRequest"
+      responses:
+        "201":
+          description: Zone created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zone"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /location/zones/{id}:
+    put:
+      operationId: updateZone
+      tags: [location]
+      summary: Update a zone (admin/manager only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateZoneRequest"
+      responses:
+        "200":
+          description: Zone updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zone"
+        "404":
+          description: Zone not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteZone
+      tags: [location]
+      summary: Delete a zone (admin/manager only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Zone deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          description: Zone not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /location/zones/{id}/visits:
+    get:
+      operationId: listZoneVisits
+      tags: [location]
+      summary: List visits for a zone (admin/manager only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of zone visits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ZoneVisit"
+
+  /location/employees/{id}/visits:
+    get:
+      operationId: listEmployeeVisits
+      tags: [location]
+      summary: List zone visits for an employee (admin/manager only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: List of zone visits
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ZoneVisit"
+
+  /company-documents:
+    get:
+      operationId: listCompanyDocuments
+      tags: [company-documents]
+      summary: List company documents
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of company documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CompanyDocument"
+    post:
+      operationId: createCompanyDocument
+      tags: [company-documents]
+      summary: Upload a company document (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCompanyDocumentRequest"
+      responses:
+        "201":
+          description: Document created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompanyDocument"
+
+  /company-documents/{id}:
+    put:
+      operationId: updateCompanyDocument
+      tags: [company-documents]
+      summary: Update a company document (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCompanyDocumentRequest"
+      responses:
+        "200":
+          description: Document updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompanyDocument"
+    delete:
+      operationId: deleteCompanyDocument
+      tags: [company-documents]
+      summary: Delete a company document (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Document deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /leaderboard:
+    get:
+      operationId: getLeaderboard
+      tags: [leaderboard]
+      summary: Get employee leaderboard
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Leaderboard data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntry"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+      required:
+        - success
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/UserProfile"
+      required:
+        - token
+        - user
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [admin, manager, employee]
+        createdAt:
+          type: string
+      required:
+        - id
+        - name
+        - email
+        - role
+        - createdAt
+
+    CreateUserRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+        role:
+          type: string
+          enum: [admin, manager, employee]
+      required:
+        - name
+        - email
+        - password
+        - role
+
+    Lead:
+      type: object
+      properties:
+        id:
+          type: integer
+        employeeId:
+          type: string
+          format: uuid
+        employeeName:
+          type: string
+        name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          nullable: true
+        propertyInterest:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [new, follow_up, meeting_scheduled, negotiation, closed_won, closed_lost]
+        notes:
+          type: string
+          nullable: true
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - employeeId
+        - name
+        - phone
+        - status
+        - createdAt
+        - updatedAt
+
+    CreateLeadRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          nullable: true
+        propertyInterest:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [new, follow_up, meeting_scheduled, negotiation, closed_won, closed_lost]
+        notes:
+          type: string
+          nullable: true
+        latitude:
+          type: number
+          description: GPS latitude — required, captured at moment of lead entry
+        longitude:
+          type: number
+          description: GPS longitude — required, captured at moment of lead entry
+      required:
+        - name
+        - phone
+        - latitude
+        - longitude
+
+    UpdateLeadRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+          nullable: true
+        propertyInterest:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [new, follow_up, meeting_scheduled, negotiation, closed_won, closed_lost]
+        notes:
+          type: string
+          nullable: true
+
+    LeadMeeting:
+      type: object
+      properties:
+        id:
+          type: integer
+        leadId:
+          type: integer
+        scheduledAt:
+          type: string
+        notes:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+      required:
+        - id
+        - leadId
+        - scheduledAt
+        - createdAt
+
+    CreateLeadMeetingRequest:
+      type: object
+      properties:
+        scheduledAt:
+          type: string
+        notes:
+          type: string
+          nullable: true
+      required:
+        - scheduledAt
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        url:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        uploadedBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+      required:
+        - id
+        - name
+        - url
+        - uploadedBy
+        - createdAt
+
+    AddDocumentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+      required:
+        - name
+        - url
+
+    TrackLocationRequest:
+      type: object
+      properties:
+        latitude:
+          type: number
+        longitude:
+          type: number
+        accuracy:
+          type: number
+          nullable: true
+        recordedAt:
+          type: string
+          nullable: true
+      required:
+        - latitude
+        - longitude
+
+    LocationPoint:
+      type: object
+      properties:
+        id:
+          type: integer
+        employeeId:
+          type: string
+          format: uuid
+        latitude:
+          type: number
+        longitude:
+          type: number
+        accuracy:
+          type: number
+          nullable: true
+        recordedAt:
+          type: string
+      required:
+        - id
+        - employeeId
+        - latitude
+        - longitude
+        - recordedAt
+
+    LocationTrailResponse:
+      type: object
+      properties:
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/LocationPoint"
+        matchedRoute:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+            minItems: 2
+            maxItems: 2
+          description: Array of [longitude, latitude] coordinate pairs from Mapbox Map Matching
+        matchConfidence:
+          type: number
+          nullable: true
+          description: Confidence score from Mapbox (0-1)
+        matchPending:
+          type: boolean
+          description: Whether map matching is still processing
+      required:
+        - points
+        - matchPending
+
+    MatchRouteRequest:
+      type: object
+      properties:
+        employeeId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          description: Date in YYYY-MM-DD format
+        points:
+          type: array
+          items:
+            type: object
+            properties:
+              lat:
+                type: number
+              lng:
+                type: number
+              timestamp:
+                type: string
+            required:
+              - lat
+              - lng
+              - timestamp
+      required:
+        - employeeId
+        - date
+        - points
+
+    MatchRouteResponse:
+      type: object
+      properties:
+        coordinates:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+            minItems: 2
+            maxItems: 2
+          description: Array of [longitude, latitude] coordinate pairs
+        confidence:
+          type: number
+          description: Mapbox match confidence (0-1)
+      required:
+        - coordinates
+        - confidence
+
+    HeartbeatRequest:
+      type: object
+      properties:
+        trackerState:
+          type: string
+        platform:
+          type: string
+      required:
+        - trackerState
+        - platform
+
+    HeartbeatResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        serverTime:
+          type: string
+        trackerState:
+          type: string
+        platform:
+          type: string
+      required:
+        - ok
+        - serverTime
+
+    EmployeeLocation:
+      type: object
+      properties:
+        employeeId:
+          type: string
+          format: uuid
+        employeeName:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+        recordedAt:
+          type: string
+      required:
+        - employeeId
+        - employeeName
+        - latitude
+        - longitude
+        - recordedAt
+
+    CompanyDocument:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        url:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        uploadedBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - url
+        - uploadedBy
+        - createdAt
+        - updatedAt
+
+    CreateCompanyDocumentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+        mimeType:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+      required:
+        - name
+        - url
+
+    LeaderboardEntry:
+      type: object
+      properties:
+        employeeId:
+          type: string
+          format: uuid
+        employeeName:
+          type: string
+        totalLeads:
+          type: integer
+        closedWon:
+          type: integer
+        rank:
+          type: integer
+      required:
+        - employeeId
+        - employeeName
+        - totalLeads
+        - closedWon
+        - rank
+
+    Zone:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+          enum: [circle, polygon]
+        color:
+          type: string
+          nullable: true
+        centerLatitude:
+          type: number
+          nullable: true
+        centerLongitude:
+          type: number
+          nullable: true
+        radiusMeters:
+          type: number
+          nullable: true
+        polygonGeoJson:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - name
+        - type
+
+    CreateZoneRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [circle, polygon]
+        color:
+          type: string
+          nullable: true
+        centerLatitude:
+          type: number
+          nullable: true
+        centerLongitude:
+          type: number
+          nullable: true
+        radiusMeters:
+          type: number
+          nullable: true
+        polygonGeoJson:
+          type: string
+          nullable: true
+      required:
+        - name
+        - type
+
+    UpdateZoneRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [circle, polygon]
+        color:
+          type: string
+          nullable: true
+        centerLatitude:
+          type: number
+          nullable: true
+        centerLongitude:
+          type: number
+          nullable: true
+        radiusMeters:
+          type: number
+          nullable: true
+        polygonGeoJson:
+          type: string
+          nullable: true
+      required:
+        - name
+        - type
+
+    ZoneVisit:
+      type: object
+      properties:
+        id:
+          type: integer
+        zoneId:
+          type: integer
+        employeeId:
+          type: string
+          format: uuid
+        enteredAt:
+          type: string
+        exitedAt:
+          type: string
+          nullable: true
+        locationPointId:
+          type: integer
+          nullable: true
+        employeeName:
+          type: string
+          nullable: true
+        zoneName:
+          type: string
+          nullable: true
+      required:
+        - id
+        - zoneId
+        - employeeId
+        - enteredAt
