@@ -57,3 +57,6 @@ dist/
 .kilo/
 *.apk
 .expo/
+
+.env
+artifacts/mobile/eas.json
