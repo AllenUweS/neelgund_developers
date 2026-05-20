@@ -1,11 +1,11 @@
-import express, { type Express } from "express";
+import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import pinoHttp from "pino-http";
-import router from "./routes";
-import { logger } from "./lib/logger";
+import router from "./routes.js";
+import { logger } from "./lib/logger.js";
 
-const app: Express = express();
+const app = express();
 
 const isProduction = process.env.NODE_ENV === "production";
 
