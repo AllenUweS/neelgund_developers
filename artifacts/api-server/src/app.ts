@@ -3,7 +3,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import pinoHttp from "pino-http";
 const pino = (pinoHttp as any);
-import router from "./routes.js";
+import router from "./routes";
 import { logger } from "./lib/logger.js";
 
 const app = express();
