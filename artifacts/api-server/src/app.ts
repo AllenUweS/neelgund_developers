@@ -2,8 +2,9 @@ import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import pinoHttp from "pino-http";
-import router from "./routes";
-import { logger } from "./lib/logger";
+const pino = (pinoHttp as any);
+import router from "./routes.js";
+import { logger } from "./lib/logger.js";
 
 const app = express();
 
@@ -29,7 +30,7 @@ const generalLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  handler(_req, res) {
+  handler(_req: any, res: any) {
     res.status(429).json({
       error: "Too many requests, please try again later.",
     });
@@ -39,10 +40,10 @@ const generalLimiter = rateLimit({
 app.use(generalLimiter);
 
 app.use(
-  pinoHttp({
+  pino({
     logger,
     serializers: {
-      req(req) {
+      req(req: any) {
         return {
           id: req.id,
           method: req.method,
