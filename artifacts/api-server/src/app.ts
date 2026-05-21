@@ -2,8 +2,8 @@ import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import pinoHttp from "pino-http";
-import router from "./routes.js";
-import { logger } from "./lib/logger.js";
+import router from "./routes";
+import { logger } from "./lib/logger";
 
 const app = express();
 
@@ -11,9 +11,11 @@ const isProduction = process.env.NODE_ENV === "production";
 
 // CORS — restrict in production, allow local dev origins otherwise
 const corsOrigin = process.env.CORS_ORIGIN;
+
 if (isProduction && !corsOrigin) {
   logger.warn("CORS_ORIGIN is not set in production. CORS will be restricted to the request origin.");
 }
+
 app.use(
   cors({
     origin: corsOrigin ? corsOrigin.split(",") : true,
@@ -28,9 +30,12 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler(_req, res) {
-    res.status(429).json({ error: "Too many requests, please try again later." });
+    res.status(429).json({
+      error: "Too many requests, please try again later.",
+    });
   },
 });
+
 app.use(generalLimiter);
 
 app.use(
@@ -44,6 +49,7 @@ app.use(
           url: req.url?.split("?")[0],
         };
       },
+
       res(res) {
         return {
           statusCode: res.statusCode,
@@ -52,6 +58,7 @@ app.use(
     },
   }),
 );
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
