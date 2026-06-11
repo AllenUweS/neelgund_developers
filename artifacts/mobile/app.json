@@ -1,7 +1,8 @@
 {
   "expo": {
     "name": "Neelgund Developers",
-    "slug": "mobile",
+    "slug": "neelgund-developers",
+    "owner": "haegltechnologies",
     "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -18,12 +19,16 @@
       "supportsTablet": false,
       "infoPlist": {
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Neelgund Developers needs location access to track field activity and record daily travel routes even when the app is in the background.",
-        "NSLocationWhenInUseUsageDescription": "Neelgund Developers needs location access to track field activity and record daily travel routes."
+        "NSLocationWhenInUseUsageDescription": "Neelgund Developers needs location access to track field activity and record daily travel routes.",
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
       }
     },
     "android": {
       "package": "com.neelgund.employeemonitor.iamjeevanhhh",
-      "versionCode": 136,
+      "versionCode": 184,
       "permissions": [
         "ACCESS_BACKGROUND_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -31,7 +36,11 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS",
-        "WAKE_LOCK"
+        "WAKE_LOCK",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_EXACT_ALARM"
       ],
       "blockedPermissions": [
         "android.permission.CAMERA",
@@ -63,9 +72,25 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Neelgund to use your location to track field activity and record daily travel routes.",
+          "locationWhenInUsePermission": "Allow Neelgund Developers to use your location to show your position on the map and for attendance.",
+          "locationAlwaysAndWhenInUsePermission": "Allow Neelgund Developers to track your field movement in the background for attendance and team trail visibility.",
+          "isIosBackgroundLocationEnabled": true,
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      "expo-background-fetch",
+      "expo-task-manager",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "2.1.20",
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "agpVersion": "8.7.3"
+          }
         }
       ]
     ],
@@ -75,7 +100,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "ddb3fdc3-bcc4-4905-9926-d85ab78de981"
+        "projectId": "b9c53075-dcb3-4c78-b15d-b0e372fa100d"
       }
     }
   }
