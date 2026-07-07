@@ -11,13 +11,15 @@ import {
   KeyboardAvoidingView,
   Platform,
   Modal,
+  Image,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import Colors from "@/constants/colors";
 import { useAuth } from "@/context/AuthContext";
-import { updateMyPassword } from "@/lib/api";
+import { updateMyPassword, uploadProfilePhoto, updateMyProfilePhoto } from "@/lib/api";
 
 const C = Colors.light;
 
@@ -27,6 +29,14 @@ export default function ProfileScreen() {
   const [showResetModal, setShowResetModal] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [localPhotoUrl, setLocalPhotoUrl] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+
+  React.useEffect(() => {
+    if (user?.profilePhotoUrl) {
+      setLocalPhotoUrl(user.profilePhotoUrl);
+    }
+  }, [user?.profilePhotoUrl]);
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
   const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0) + 90;
@@ -48,6 +58,68 @@ export default function ProfileScreen() {
     onError: (err: Error) => Alert.alert("Reset Failed", err.message || "Unable to reset password"),
   });
 
+  const pickPhoto = async () => {
+    if (Platform.OS !== "web") {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission required", "Please allow access to your photo library.");
+        return;
+      }
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.6,
+      base64: true,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      const uri = result.assets[0].uri;
+      const base64 = result.assets[0].base64 ?? null;
+      await handleUpload(uri, base64);
+    }
+  };
+
+  const handleUpload = async (uri: string, base64: string | null) => {
+    if (!user) return;
+    try {
+      setUploadingPhoto(true);
+      const mimeType = uri.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+      
+      let finalB64 = base64;
+      if (Platform.OS === "web" && !finalB64) {
+        const res = await fetch(uri);
+        const blob = await res.blob();
+        finalB64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.onerror = () => reject(new Error("Failed to read image"));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      if (Platform.OS !== "web" && !finalB64) {
+         finalB64 = ""; 
+      }
+      if (Platform.OS === "web" && !finalB64) throw new Error("Could not read image data");
+
+      const finalPhotoUrl = await uploadProfilePhoto(
+        user.id, 
+        finalB64 ?? "", 
+        mimeType, 
+        Platform.OS !== "web" ? uri : undefined
+      );
+
+      await updateMyProfilePhoto(finalPhotoUrl);
+      setLocalPhotoUrl(finalPhotoUrl);
+      Alert.alert("Success", "Profile photo updated successfully.");
+    } catch (error) {
+      Alert.alert("Upload Failed", error instanceof Error ? error.message : "Could not upload photo");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView
@@ -56,9 +128,20 @@ export default function ProfileScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
-          <View style={styles.avatarWrap}>
-            <Text style={styles.avatarText}>{user?.name?.charAt(0)?.toUpperCase() ?? "?"}</Text>
-          </View>
+          <TouchableOpacity style={styles.avatarWrap} onPress={pickPhoto} activeOpacity={0.8} disabled={uploadingPhoto}>
+            {uploadingPhoto ? (
+              <ActivityIndicator color={C.brand} />
+            ) : localPhotoUrl ? (
+              <Image source={{ uri: localPhotoUrl }} style={styles.avatarImage} />
+            ) : (
+              <Text style={styles.avatarText}>{user?.name?.charAt(0)?.toUpperCase() ?? "?"}</Text>
+            )}
+            {!uploadingPhoto && (
+              <View style={styles.cameraOverlay}>
+                <Ionicons name="camera" size={14} color="#fff" />
+              </View>
+            )}
+          </TouchableOpacity>
           <Text style={styles.name}>{user?.name ?? "User"}</Text>
           <Text style={styles.role}>{(user?.role ?? "employee").toUpperCase()}</Text>
         </View>
@@ -95,9 +178,9 @@ export default function ProfileScreen() {
         <TouchableOpacity
           style={styles.logoutBtn}
           onPress={() => {
-            Alert.alert("Sign Out", "Do you want to sign out?", [
+            Alert.alert("Heading Out? 🚀", "Are you sure you want to log out? Your leads will miss you!", [
               { text: "Cancel", style: "cancel" },
-              { text: "Sign Out", style: "destructive", onPress: () => logout() },
+              { text: "Log Out", style: "destructive", onPress: () => logout() },
             ]);
           }}
         >
@@ -177,8 +260,22 @@ function ProfileRow({ icon, label, value }: { icon: React.ComponentProps<typeof 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.background },
   header: { alignItems: "center", paddingTop: 18, gap: 8 },
-  avatarWrap: { width: 78, height: 78, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: C.brand + "1A" },
+  avatarWrap: { width: 78, height: 78, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: C.brand + "1A", position: "relative" },
   avatarText: { fontSize: 32, fontFamily: "Inter_700Bold", color: C.brand },
+  avatarImage: { width: "100%", height: "100%", borderRadius: 22 },
+  cameraOverlay: {
+    position: "absolute",
+    bottom: -6,
+    right: -6,
+    backgroundColor: C.brand,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: C.background,
+  },
   name: { fontSize: 22, fontFamily: "Inter_700Bold", color: C.text },
   role: {
     fontSize: 11,

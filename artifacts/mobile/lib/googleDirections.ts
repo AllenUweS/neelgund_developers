@@ -6,7 +6,7 @@
  * API docs: https://developers.google.com/maps/documentation/directions
  */
 
-import { GOOGLE_MAPS_KEY } from "@/lib/googleMapsKey";
+import { getGoogleMapsKey } from "@/lib/googleMapsKey";
 
 const DIRECTIONS_BASE =
   "https://maps.googleapis.com/maps/api/directions/json";
@@ -78,6 +78,7 @@ function decodePolyline(encoded: string): number[][] {
 export async function fetchDirections(
   waypoints: number[][]
 ): Promise<DirectionsResult | null> {
+  const GOOGLE_MAPS_KEY = await getGoogleMapsKey();
   if (!GOOGLE_MAPS_KEY) return null;
   if (waypoints.length < 2) return null;
 
@@ -88,10 +89,10 @@ export async function fetchDirections(
   const waypointsParam =
     waypoints.length > 2
       ? "&waypoints=" +
-        waypoints
-          .slice(1, -1)
-          .map((w) => `${w[1]},${w[0]}`)
-          .join("|")
+      waypoints
+        .slice(1, -1)
+        .map((w) => `${w[1]},${w[0]}`)
+        .join("|")
       : "";
 
   const url =

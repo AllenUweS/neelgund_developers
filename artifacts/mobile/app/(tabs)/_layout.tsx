@@ -62,7 +62,7 @@ export default function TabLayout() {
         name="leads"
         options={{
           title: "Leads",
-          href: isTransport ? null : undefined,
+          href: isTransport || role === "hr" ? null : undefined,
           tabBarIcon: ({ color }) => <Ionicons name="people" size={22} color={color} />,
         }}
       />
@@ -71,6 +71,7 @@ export default function TabLayout() {
         options={{
           title: "Map",
           headerShown: false,
+          href: ["admin", "super_admin", "hr", "manager"].includes(role) ? undefined : null,
           tabBarIcon: ({ color }) => <Ionicons name="map" size={22} color={color} />,
         }}
       />
@@ -125,14 +126,6 @@ export default function TabLayout() {
           title: "Super Admin",
           href: null,
           tabBarIcon: ({ color }) => <Ionicons name="shield-checkmark" size={22} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="tracking-status"
-        options={{
-          title: "Tracking",
-          href: null,
-          tabBarIcon: ({ color }) => <Ionicons name="pulse" size={22} color={color} />,
         }}
       />
     </Tabs>

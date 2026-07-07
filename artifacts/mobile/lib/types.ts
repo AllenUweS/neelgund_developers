@@ -87,6 +87,8 @@ export type EmployeeLocation = {
   // "running" = actively tracking, "stopped" = logged out / stopped.
   // undefined = employee has no tracking_status row yet (legacy data).
   trackerState?: "running" | "stopped";
+  lastPingAt?: string | null;
+  profilePhotoUrl?: string | null;
 };
 
 export type ActivityType = "driving" | "walking" | "stationary" | "unknown";

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   RefreshControl,
   useWindowDimensions,
+  Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,6 +22,9 @@ import { getAttendanceToday, getDashboardStats, getRecentLeads, getHotLeadsToday
 import type { LeaderboardEntry, Lead, AttendanceRecord, DashboardStats } from "@/lib/types";
 import { statusColor, statusLabel, greeting, PRIORITY_COLORS } from "@/lib/utils";
 import { Skeleton, StatCardSkeleton, LeadRowSkeleton, HotCardSkeleton, LeaderboardRowSkeleton } from "@/components/Skeleton";
+import { CheckInCard } from "@/components/CheckInCard";
+import { useLocationTracker } from "@/hooks/useLocationTracker";
+import NotificationBell from "@/components/NotificationBell";
 
 type IoniconsName = ComponentProps<typeof Ionicons>["name"];
 
@@ -94,7 +98,6 @@ export default function DashboardScreen() {
   const attendanceQ = useQuery<AttendanceRecord | null>({
     queryKey: ["attendance-today"],
     queryFn: getAttendanceToday,
-    enabled: user?.role === "employee" || user?.role === "transport",
     staleTime: 30_000,
   });
 
@@ -114,10 +117,15 @@ export default function DashboardScreen() {
   }, []);
 
   const topPad = useMemo(() => insets.top + (Platform.OS === "web" ? 67 : 0), [insets.top]);
-  const bottomPad = useMemo(() => insets.bottom + (Platform.OS === "web" ? 34 : 0) + 90, [insets.bottom]);
+  const bottomPad = useMemo(() => insets.bottom + (Platform.OS === "web" ? 34 : 0) + 120, [insets.bottom]);
 
   const hasCheckedIn = !!todayRecord?.checkInTime;
   const hasCheckedOut = !!todayRecord?.checkOutTime;
+
+  // Tracking: only active for employees/transport while checked in and not yet checked out
+  const isEmployee = user?.role === "employee" || user?.role === "transport";
+  const trackingEnabled = isEmployee && hasCheckedIn && !hasCheckedOut;
+  useLocationTracker(isEmployee ? (user?.id ?? null) : null, trackingEnabled);
 
   return (
     <ScrollView
@@ -148,42 +156,23 @@ export default function DashboardScreen() {
           <View style={styles.roleBadge}>
             <Text style={styles.roleBadgeText}>{user?.role?.toUpperCase()}</Text>
           </View>
-          <TouchableOpacity onPress={logout} style={styles.logoutBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="log-out-outline" size={20} color={C.textSecondary} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <NotificationBell />
+            <TouchableOpacity onPress={() => {
+              Alert.alert(
+                "Heading Out? 🚀",
+                "Are you sure you want to log out? Your leads will miss you!",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Log Out", style: "destructive", onPress: () => logout() },
+                ]
+              );
+            }} style={styles.logoutBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="log-out-outline" size={20} color={C.textSecondary} />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
-
-      {/* Attendance Quick Card */}
-      {(user?.role === "employee" || user?.role === "transport") && (
-        isLoading ? (
-          <Skeleton width="100%" height={56} borderRadius={14} />
-        ) : (
-          <TouchableOpacity
-            style={[
-              styles.attendanceCard,
-              hasCheckedIn && !hasCheckedOut && { borderColor: C.success + "40", backgroundColor: C.success + "08" },
-              hasCheckedOut && { borderColor: C.brand + "30" },
-            ]}
-            onPress={() => router.push("/(tabs)/attendance")}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.attendanceDot, {
-              backgroundColor: hasCheckedOut ? C.success : hasCheckedIn ? C.warning : C.danger,
-            }]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.attendanceLabel}>
-                {hasCheckedOut
-                  ? "Checked out for today"
-                  : hasCheckedIn
-                  ? "Checked in — don't forget to check out"
-                  : "Not checked in yet"}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={C.border} />
-          </TouchableOpacity>
-        )
-      )}
 
       {/* Stats Grid */}
       <View style={[styles.statsGrid, isWide && { flexDirection: "row", flexWrap: "wrap" }]}>
@@ -203,6 +192,11 @@ export default function DashboardScreen() {
           </>
         )}
       </View>
+
+      {/* Check In Card */}
+      {user?.role !== "admin" && (
+        <CheckInCard todayRecord={todayRecord ?? null} isLoadingRecord={attendanceQ.isLoading} />
+      )}
 
       {/* Hot Leads Row */}
       {(isLoading || hotLeads.length > 0) && (
@@ -356,6 +350,7 @@ const styles = StyleSheet.create({
   headerRight: { alignItems: "flex-end", gap: 8 },
   roleBadge: { backgroundColor: C.brand + "15", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 3 },
   roleBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold", color: C.brand, letterSpacing: 1 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   logoutBtn: { padding: 6 },
 
   attendanceCard: {

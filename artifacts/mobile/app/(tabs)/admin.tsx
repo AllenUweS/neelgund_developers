@@ -12,17 +12,24 @@ import {
   TextInput,
   Alert,
   ScrollView,
+  Image,
+  Switch,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { router } from "expo-router";
 import Colors from "@/constants/colors";
 import { useAuth } from "@/context/AuthContext";
-import { listUsers, listManagers, createUser, updateUser, deleteUser, resetUserPassword, type AppRole, type AppUser } from "@/lib/api";
+import { listUsers, listManagers, createUser, updateUser, deleteUser, resetUserPassword, uploadProfilePhoto, listPendingAttendanceRegularizations, updateUserStatus, type AppRole, type AppUser } from "@/lib/api";
 import { useDebounce } from "@/hooks/useDebounce";
+import GoogleMapsKeyPanel from "@/lib/GoogleMapsKeyPanel";
+import NotificationBell from "@/components/NotificationBell";
+
 
 const C = Colors.light;
 
@@ -41,6 +48,10 @@ type FormState = {
   joiningDate: string;
   profileNotes: string;
   managerId: string | null;
+  profilePhotoUri: string | null; // local URI for preview (not uploaded yet)
+  profilePhotoUrl: string | null; // already-uploaded URL
+  status: "active" | "inactive";
+  _photoBase64: string | null;   // base64 captured at pick time (native only)
 };
 
 const BLANK_FORM: FormState = {
@@ -54,6 +65,10 @@ const BLANK_FORM: FormState = {
   joiningDate: "",
   profileNotes: "",
   managerId: null,
+  profilePhotoUri: null,
+  profilePhotoUrl: null,
+  status: "active",
+  _photoBase64: null,
 };
 
 function roleNeedsManager(role: AppRole): boolean {
@@ -114,6 +129,7 @@ export default function AdminScreen() {
   const [form, setForm] = useState<FormState>(BLANK_FORM);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [managerPickerOpen, setManagerPickerOpen] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
   const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0) + 90;
@@ -149,6 +165,7 @@ export default function AdminScreen() {
         joiningDate: user.joiningDate || null,
         profileNotes: user.profileNotes || null,
         managerId: roleNeedsManager(user.role) ? user.managerId : null,
+        profilePhotoUrl: user.profilePhotoUrl || null,
       });
     },
     onSuccess: () => {
@@ -196,6 +213,17 @@ export default function AdminScreen() {
     },
   });
 
+  const toggleStatusMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: "active" | "inactive" }) => {
+      await updateUserStatus(id, status);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    },
+    onError: (err: Error) => Alert.alert("Error", err.message),
+  });
+
   const openAdd = () => {
     setEditingUser(null);
     setForm(BLANK_FORM);
@@ -216,6 +244,10 @@ export default function AdminScreen() {
       joiningDate: user.joiningDate ?? "",
       profileNotes: user.profileNotes ?? "",
       managerId: user.managerId ?? null,
+      profilePhotoUri: null,
+      profilePhotoUrl: user.profilePhotoUrl ?? null,
+      status: user.status ?? "active",
+      _photoBase64: null,
     });
     setModalMode("edit");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -229,7 +261,55 @@ export default function AdminScreen() {
     setManagerPickerOpen(false);
   };
 
-  const handleSave = () => {
+  const pickPhoto = async () => {
+    if (Platform.OS !== "web") {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission required", "Please allow access to your photo library.");
+        return;
+      }
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.6,
+      base64: true, // get base64 directly from picker — avoids all file:// URI issues on Android
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      setForm(f => ({ ...f, profilePhotoUri: result.assets[0].uri, _photoBase64: result.assets[0].base64 ?? null }));
+    }
+  };
+
+  // Uploads the currently selected photo and returns its public URL.
+  const uploadSelectedPhoto = async (userId: string): Promise<string> => {
+    const uri = form.profilePhotoUri!;
+    const mimeType = uri.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+
+    if (Platform.OS !== "web") {
+      // Native: pass the local file URI directly — no base64 or Blob needed.
+      // uploadProfilePhoto will use FormData + { uri, name, type } which RN fetch handles natively.
+      const b64 = (form as any)._photoBase64 as string | null ?? null;
+      return uploadProfilePhoto(userId, b64 ?? "", mimeType, uri);
+    }
+
+    // Web: convert blob URL → base64, then upload as a real Blob.
+    let b64: string | null = (form as any)._photoBase64 as string | null ?? null;
+    if (!b64) {
+      const res = await fetch(uri);
+      const blob = await res.blob();
+      b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(",")[1]);
+        reader.onerror = () => reject(new Error("Failed to read image"));
+        reader.readAsDataURL(blob);
+      });
+    }
+    if (!b64) throw new Error("Could not read image data");
+    return uploadProfilePhoto(userId, b64, mimeType);
+  };
+
+  const handleSave = async () => {
     if (modalMode === "add") {
       if (!form.name.trim() || !form.email.trim() || !form.password.trim()) {
         Alert.alert("Required", "Name, email and password are required");
@@ -243,11 +323,29 @@ export default function AdminScreen() {
         Alert.alert("Weak Password", "Password must be at least 8 characters");
         return;
       }
+
+      // Upload photo first if one was selected
+      let finalPhotoUrl: string | null = null;
+      if (form.profilePhotoUri) {
+        try {
+          setUploadingPhoto(true);
+          const tempId = `new-${Date.now()}`;
+          finalPhotoUrl = await uploadSelectedPhoto(tempId);
+        } catch (err) {
+          Alert.alert("Upload Failed", err instanceof Error ? err.message : "Could not upload photo");
+          setUploadingPhoto(false);
+          return;
+        } finally {
+          setUploadingPhoto(false);
+        }
+      }
+
       addMutation.mutate({
         ...form,
         name: form.name.trim(),
         email: form.email.trim().toLowerCase(),
         password: form.password.trim(),
+        profilePhotoUrl: finalPhotoUrl,
       });
     } else if (modalMode === "edit" && editingUser) {
       if (!form.name.trim() || !form.email.trim()) {
@@ -258,6 +356,22 @@ export default function AdminScreen() {
         Alert.alert("Invalid Email", "Please enter a valid email address");
         return;
       }
+
+      // Upload new photo if user picked one
+      let finalPhotoUrl: string | null = form.profilePhotoUrl ?? null;
+      if (form.profilePhotoUri) {
+        try {
+          setUploadingPhoto(true);
+          finalPhotoUrl = await uploadSelectedPhoto(editingUser.id);
+        } catch (err) {
+          Alert.alert("Upload Failed", err instanceof Error ? err.message : "Could not upload photo");
+          setUploadingPhoto(false);
+          return;
+        } finally {
+          setUploadingPhoto(false);
+        }
+      }
+
       const payload: Record<string, unknown> = {
         name: form.name.trim(),
         email: form.email.trim(),
@@ -269,12 +383,14 @@ export default function AdminScreen() {
         joiningDate: form.joiningDate.trim() || null,
         profileNotes: form.profileNotes.trim() || null,
         managerId: roleNeedsManager(form.role) ? form.managerId : null,
+        profilePhotoUrl: finalPhotoUrl,
+        status: form.status,
       };
       editMutation.mutate({ id: editingUser.id, data: payload as Partial<FormState> });
     }
   };
 
-  const isPending = addMutation.isPending || editMutation.isPending;
+  const isPending = addMutation.isPending || editMutation.isPending || uploadingPhoto;
   const users = React.useMemo(
     () => (data ?? []).filter((u) => manageableRoles.includes(u.role)),
     [data, manageableRoles],
@@ -301,9 +417,12 @@ export default function AdminScreen() {
           <Text style={styles.title}>HR & Admin</Text>
           <Text style={styles.subtitle}>Manage team members, roles and reporting lines</Text>
         </View>
-        <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
-          <Ionicons name="person-add" size={20} color="#FFFFFF" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+          <NotificationBell />
+          <TouchableOpacity style={styles.addBtn} onPress={openAdd}>
+            <Ionicons name="person-add" size={20} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.toolbar}>
@@ -354,6 +473,13 @@ export default function AdminScreen() {
           keyExtractor={item => item.id.toString()}
           contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 12, gap: 10, paddingBottom: bottomPad }}
           showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            <View style={{ marginBottom: 8 }}>
+              <Text style={{ fontSize: 17, fontWeight: "700", color: C.text, marginBottom: 10 }}>App Configuration</Text>
+              <GoogleMapsKeyPanel />
+              <Text style={{ fontSize: 17, fontWeight: "700", color: C.text, marginBottom: 4, marginTop: 8 }}>Team Members</Text>
+            </View>
+          }
           initialNumToRender={Platform.OS === "web" ? 20 : 12}
           maxToRenderPerBatch={Platform.OS === "web" ? 15 : 8}
           windowSize={Platform.OS === "web" ? 10 : 5}
@@ -372,7 +498,11 @@ export default function AdminScreen() {
                 activeOpacity={0.85}
               >
                 <View style={[styles.userAvatar, { backgroundColor: color + "18" }]}>
-                  <Text style={[styles.userAvatarText, { color }]}>{item.name.charAt(0).toUpperCase()}</Text>
+                  {item.profilePhotoUrl ? (
+                    <Image source={{ uri: item.profilePhotoUrl }} style={styles.userAvatarImg} />
+                  ) : (
+                    <Text style={[styles.userAvatarText, { color }]}>{item.name.charAt(0).toUpperCase()}</Text>
+                  )}
                 </View>
                 <View style={styles.userInfo}>
                   <Text style={styles.userName} numberOfLines={1}>{item.name}</Text>
@@ -391,6 +521,24 @@ export default function AdminScreen() {
                 <View style={[styles.roleBadge, { backgroundColor: color + "18" }]}>
                   <Text style={[styles.roleText, { color }]}>{item.role}</Text>
                 </View>
+
+                <View style={{ flexDirection: "row", alignItems: "center", marginRight: 2, gap: 4 }}>
+                  <Text style={{ fontSize: 10, color: item.status === "inactive" ? C.danger : C.brand, fontWeight: "600", textTransform: "uppercase" }}>
+                    {item.status === "inactive" ? "Inactive" : "Active"}
+                  </Text>
+                  <Switch
+                    value={item.status !== "inactive"}
+                    onValueChange={(val) => {
+                      const newStatus = val ? "active" : "inactive";
+                      toggleStatusMutation.mutate({ id: item.id, status: newStatus });
+                    }}
+                    disabled={toggleStatusMutation.isPending}
+                    trackColor={{ false: "#E5E7EB", true: C.brand }}
+                    thumbColor="#FFFFFF"
+                    style={{ transform: [{ scale: 0.7 }] }}
+                  />
+                </View>
+
                 <TouchableOpacity onPress={() => openEdit(item)} style={styles.iconBtn} hitSlop={8}>
                   <Ionicons name="pencil-outline" size={17} color={C.brand} />
                 </TouchableOpacity>
@@ -449,9 +597,13 @@ export default function AdminScreen() {
               {/* Profile Hero */}
               <View style={styles.profileHero}>
                 <View style={[styles.profileAvatar, { backgroundColor: roleColors[profileUser.role] + "20" }]}>
-                  <Text style={[styles.profileAvatarText, { color: roleColors[profileUser.role] }]}>
-                    {profileUser.name.charAt(0).toUpperCase()}
-                  </Text>
+                  {profileUser.profilePhotoUrl ? (
+                    <Image source={{ uri: profileUser.profilePhotoUrl }} style={styles.profileAvatarImg} />
+                  ) : (
+                    <Text style={[styles.profileAvatarText, { color: roleColors[profileUser.role] }]}>
+                      {profileUser.name.charAt(0).toUpperCase()}
+                    </Text>
+                  )}
                 </View>
                 <Text style={styles.profileName}>{profileUser.name}</Text>
                 {profileUser.designation ? (
@@ -498,13 +650,6 @@ export default function AdminScreen() {
                 <View style={styles.profileActionsRow}>
                   <TouchableOpacity style={styles.quickLinkBtn} onPress={() => {
                     setProfileUser(null);
-                    router.push("/(tabs)/tracking-status");
-                  }}>
-                    <Ionicons name="pulse-outline" size={15} color={C.brand} />
-                    <Text style={styles.quickLinkText}>Tracking Status</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.quickLinkBtn} onPress={() => {
-                    setProfileUser(null);
                     router.push("/(tabs)/super-admin");
                   }}>
                     <Ionicons name="shield-checkmark-outline" size={15} color={C.brand} />
@@ -538,6 +683,33 @@ export default function AdminScreen() {
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 20, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+            {/* Profile Photo Picker */}
+            <View style={styles.photoPickerContainer}>
+              <TouchableOpacity style={styles.photoPickerBtn} onPress={pickPhoto} activeOpacity={0.8}>
+                {(form.profilePhotoUri || form.profilePhotoUrl) ? (
+                  <Image
+                    source={{ uri: form.profilePhotoUri ?? form.profilePhotoUrl! }}
+                    style={styles.photoPreview}
+                  />
+                ) : (
+                  <View style={styles.photoPlaceholder}>
+                    <Ionicons name="person-circle-outline" size={48} color={C.textSecondary} />
+                  </View>
+                )}
+                <View style={styles.photoCameraOverlay}>
+                  <Ionicons name="camera" size={16} color="#fff" />
+                </View>
+              </TouchableOpacity>
+              <Text style={styles.photoPickerLabel}>
+                {form.profilePhotoUri ? "Photo selected — tap to change" : form.profilePhotoUrl ? "Tap to change photo" : "Tap to add photo"}
+              </Text>
+              {(form.profilePhotoUri || form.profilePhotoUrl) && (
+                <TouchableOpacity onPress={() => setForm(f => ({ ...f, profilePhotoUri: null, profilePhotoUrl: null }))} hitSlop={8}>
+                  <Text style={{ fontSize: 12, fontFamily: "Inter_500Medium", color: C.danger }}>Remove photo</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             <SectionHeader title="Account Info" />
 
             <ModalField label="Full Name *" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="John Doe" autoCapitalize="words" />
@@ -599,8 +771,8 @@ export default function AdminScreen() {
                     {form.managerId
                       ? managerNameById.get(form.managerId) ?? "Unknown manager"
                       : managers.length === 0
-                      ? "No managers exist yet"
-                      : "Select a manager"}
+                        ? "No managers exist yet"
+                        : "Select a manager"}
                   </Text>
                   {form.managerId ? (
                     <TouchableOpacity
@@ -986,4 +1158,27 @@ const styles = StyleSheet.create({
   },
   roleOptionText: { fontSize: 13, fontFamily: "Inter_500Medium", color: C.textSecondary },
   roleOptionTextActive: { color: "#FFFFFF", fontFamily: "Inter_600SemiBold" },
+
+  // Photo picker
+  photoPickerContainer: { alignItems: "center", gap: 8 },
+  photoPickerBtn: { position: "relative", width: 88, height: 88 },
+  photoPreview: { width: 88, height: 88, borderRadius: 22, backgroundColor: C.surfaceSecondary },
+  photoPlaceholder: {
+    width: 88, height: 88, borderRadius: 22,
+    backgroundColor: C.surfaceSecondary,
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 1.5, borderColor: C.border, borderStyle: "dashed",
+  },
+  photoCameraOverlay: {
+    position: "absolute", bottom: -4, right: -4,
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: C.brand, alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderColor: "#fff",
+  },
+  photoPickerLabel: { fontSize: 12, fontFamily: "Inter_400Regular", color: C.textSecondary },
+
+  // User card avatar image
+  userAvatarImg: { width: 44, height: 44, borderRadius: 13 },
+  // Profile hero image
+  profileAvatarImg: { width: 80, height: 80, borderRadius: 24 },
 });

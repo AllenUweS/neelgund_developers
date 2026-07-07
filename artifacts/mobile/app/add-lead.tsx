@@ -21,8 +21,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import Colors from "@/constants/colors";
 import { useAuth } from "@/context/AuthContext";
-import { createLead } from "@/lib/api";
-import type { Lead } from "@/lib/types";
+import { createLead, checkLeadPhoneDuplicate } from "@/lib/api";
 import { enqueueLead } from "@/lib/offlineQueue";
 import { reverseGeocode, openInGoogleMaps, formatCoordinates } from "@/lib/geocoding";
 
@@ -62,6 +61,8 @@ export default function AddLeadScreen() {
     (user?.department != null && user.department.toLowerCase() === "transport");
   const [loading, setLoading] = useState(false);
   const [locLoading, setLocLoading] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [phoneChecking, setPhoneChecking] = useState(false);
   const [showFollowUpPicker, setShowFollowUpPicker] = useState(false);
   const [address, setAddress] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -126,12 +127,34 @@ export default function AddLeadScreen() {
     }
   };
 
+  const handlePhoneBlur = async () => {
+    const phone = form.phone.trim();
+    if (!phone) {
+      setPhoneError(null);
+      return;
+    }
+    setPhoneChecking(true);
+    setPhoneError(null);
+    try {
+      const duplicate = await checkLeadPhoneDuplicate(phone);
+      if (duplicate) {
+        setPhoneError(
+          `This number already exists — "${duplicate.name}" (${duplicate.status})`
+        );
+      }
+    } catch {
+      // ignore — submit-time validation is the safety net
+    } finally {
+      setPhoneChecking(false);
+    }
+  };
+
   const submitLead = async () => {
-    setLoading(true);
+    // Note: loading state is already set by handleSubmit before calling here
     const payload = {
-      name: form.name,
-      phone: form.phone,
-      email: form.email || null,
+      name: form.name.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim() || null,
       propertyInterest: form.propertyInterest || null,
       status: form.status,
       notes: form.notes || null,
@@ -150,7 +173,20 @@ export default function AddLeadScreen() {
       queryClient.invalidateQueries({ queryKey: ["leads"] });
       queryClient.invalidateQueries({ queryKey: ["leaderboard"] });
       router.back();
-    } catch (err) {
+    } catch (err: any) {
+      // Check if the server returned a duplicate phone error
+      const errMsg: string = err?.message ?? "";
+      if (
+        errMsg.toLowerCase().includes("duplicate") ||
+        errMsg.toLowerCase().includes("unique") ||
+        errMsg.toLowerCase().includes("phone") ||
+        errMsg.toLowerCase().includes("already exists")
+      ) {
+        setPhoneError("This phone number is already registered to another lead.");
+        Alert.alert("Duplicate Number", "A lead with this phone number already exists. Please use a different number.");
+        setLoading(false);
+        return;
+      }
       Alert.alert(
         "Failed to Save",
         "Could not create the lead right now. Save it locally and sync when you're back online?",
@@ -181,10 +217,21 @@ export default function AddLeadScreen() {
       router.back();
       return;
     }
-    if (!form.name.trim() || !form.phone.trim()) {
-      Alert.alert("Required", "Name and phone number are required");
+    if (!form.name.trim()) {
+      Alert.alert("Required", "Please enter the lead's full name.");
       return;
     }
+    if (!form.phone.trim()) {
+      Alert.alert("Required", "Phone number is required.");
+      return;
+    }
+    // Basic phone format sanity — digits only after stripping spaces/dashes
+    const digitsOnly = form.phone.replace(/[\s\-+]/g, "");
+    if (digitsOnly.length < 7) {
+      Alert.alert("Invalid Number", "Please enter a valid phone number.");
+      return;
+    }
+
     if (form.latitude === null) {
       Alert.alert(
         "GPS Required",
@@ -193,8 +240,6 @@ export default function AddLeadScreen() {
           {
             text: "Retry GPS",
             onPress: () => {
-              // Only retry the location capture — do NOT recursively call
-              // handleSubmit() here, or an infinite Alert loop can form.
               autoCaptureLocation();
             },
           },
@@ -204,26 +249,33 @@ export default function AddLeadScreen() {
       return;
     }
 
-    // Duplicate lead detection by phone number
-    const normalizedPhone = form.phone.trim().replace(/\s+/g, "").replace(/^\+?91/, "");
-    const cachedLeads = queryClient.getQueryData<Lead[]>(["leads"]);
-    const duplicate = cachedLeads?.find((l) => {
-      const lp = l.phone.trim().replace(/\s+/g, "").replace(/^\+?91/, "");
-      return lp === normalizedPhone;
-    });
-    if (duplicate) {
-      Alert.alert(
-        "Duplicate Lead",
-        `A lead with this phone number already exists: "${duplicate.name}" (${duplicate.status}). Do you want to continue?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Continue", onPress: () => submitLead() },
-        ]
-      );
+    // Block if inline validation already flagged a duplicate
+    if (phoneError) {
+      Alert.alert("Duplicate Number", phoneError);
       return;
     }
 
-    submitLead();
+    // Final duplicate check before saving — wrap in try/catch so a network
+    // failure doesn't silently swallow the save.
+    setLoading(true);
+    try {
+      const duplicate = await checkLeadPhoneDuplicate(form.phone.trim());
+      if (duplicate) {
+        const msg = `A lead with this number already exists: "${duplicate.name}" (${duplicate.status}).\n\nEach mobile number must be unique. Please use a different number.`;
+        setPhoneError(
+          `This number already exists — "${duplicate.name}" (${duplicate.status})`
+        );
+        Alert.alert("Duplicate Number", msg);
+        setLoading(false);
+        return;
+      }
+    } catch {
+      // Network error on duplicate check — proceed to save (server will enforce uniqueness)
+      // Don't block the user from saving just because the pre-check failed
+    }
+
+    // Proceed to create the lead (setLoading already true)
+    await submitLead();
   };
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
@@ -267,8 +319,8 @@ export default function AddLeadScreen() {
               {locLoading
                 ? "Capturing location..."
                 : form.latitude
-                ? address || `Location captured (${formatCoordinates(form.latitude, form.longitude!)})`
-                : "Location not available"}
+                  ? address || `Location captured (${formatCoordinates(form.latitude, form.longitude!)})`
+                  : "Location not available"}
             </Text>
             {!form.latitude && !locLoading && Platform.OS !== "web" && (
               <TouchableOpacity onPress={autoCaptureLocation}>
@@ -284,7 +336,15 @@ export default function AddLeadScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Contact Info</Text>
             <Field label="Full Name *" value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="Amit Kumar" />
-            <Field label="Phone *" value={form.phone} onChange={v => setForm(f => ({ ...f, phone: v }))} placeholder="+91 98765 43210" keyboardType="phone-pad" />
+            <Field
+              label="Phone *"
+              value={form.phone}
+              onChange={v => { setForm(f => ({ ...f, phone: v })); setPhoneError(null); }}
+              onBlur={handlePhoneBlur}
+              placeholder="+91 98765 43210"
+              keyboardType="phone-pad"
+              error={phoneChecking ? "Checking…" : phoneError ?? undefined}
+            />
             <Field label="Email" value={form.email} onChange={v => setForm(f => ({ ...f, email: v }))} placeholder="amit@email.com" keyboardType="email-address" />
             <Field label="Address" value={form.address} onChange={v => setForm(f => ({ ...f, address: v }))} placeholder="Client address or location" multiline numberOfLines={2} />
           </View>
@@ -454,35 +514,45 @@ function Field({
   label,
   value,
   onChange,
+  onBlur,
   placeholder,
   keyboardType,
   multiline,
   numberOfLines,
   autoCapitalize,
+  error,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
+  onBlur?: () => void;
   placeholder?: string;
   keyboardType?: KeyboardTypeOptions;
   multiline?: boolean;
   numberOfLines?: number;
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  error?: string;
 }) {
   return (
     <View style={styles.formField}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput
-        style={[styles.fieldInput, multiline && { height: (numberOfLines ?? 3) * 24 + 16, textAlignVertical: "top" }]}
+        style={[
+          styles.fieldInput,
+          multiline && { height: (numberOfLines ?? 3) * 24 + 16, textAlignVertical: "top" },
+          error ? styles.fieldInputError : undefined,
+        ]}
         placeholder={placeholder}
         placeholderTextColor={C.placeholder}
         value={value}
         onChangeText={onChange}
+        onBlur={onBlur}
         keyboardType={keyboardType ?? "default"}
         autoCapitalize={autoCapitalize ?? "words"}
         multiline={multiline}
         numberOfLines={numberOfLines}
       />
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
   );
 }
@@ -536,6 +606,16 @@ const styles = StyleSheet.create({
     color: C.text,
     borderWidth: 1,
     borderColor: C.border,
+  },
+  fieldInputError: {
+    borderColor: "#E53935",
+    backgroundColor: "#FFF5F5",
+  },
+  fieldError: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    color: "#E53935",
+    marginTop: 2,
   },
   chipGrid: {
     flexDirection: "row",

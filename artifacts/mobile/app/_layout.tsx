@@ -15,7 +15,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
-import { useLocationTracker } from "@/hooks/useLocationTracker";
+import { usePushToken } from "@/hooks/usePushToken";
 import { processQueue } from "@/lib/offlineQueue";
 import { setNotificationHandler } from "@/lib/notifications";
 
@@ -43,7 +43,7 @@ function RootLayoutNav() {
   const lastUserIdRef = useRef<string | null | undefined>(undefined);
   const lastLocationCheckRef = useRef(0);
   const pathname = usePathname();
-  useLocationTracker(user?.id ?? null);
+  usePushToken(user?.id ?? null);
 
   useEffect(() => {
     if (isLoading) return;

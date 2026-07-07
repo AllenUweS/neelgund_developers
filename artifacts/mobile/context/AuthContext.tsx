@@ -3,7 +3,7 @@ import { AppState } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { getMe, signOut as apiSignOut, type AppUser } from "@/lib/api";
-import { persistAuthToken, clearPersistedAuthToken } from "@/utils/tokenStorage";
+import { persistAuthToken, persistRefreshToken, persistUserId, clearPersistedAuthToken } from "@/utils/tokenStorage";
 
 type User = AppUser;
 
@@ -40,15 +40,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         return;
       }
-      // Persist token for background tasks
+      // Persist tokens for background tasks (JS + native bridge)
       if (session.access_token) {
         await persistAuthToken(session.access_token);
+      }
+      if (session.refresh_token) {
+        await persistRefreshToken(session.refresh_token);
+      }
+      if (session.user?.id) {
+        await persistUserId(session.user.id);
       }
       try {
         const me = await getMe();
         if (!mounted) return;
         if (me) {
-          setUser(me);
+          // Only update if something actually changed — prevents TOKEN_REFRESHED
+          // from causing full re-renders on every JWT auto-refresh.
+          const cur = userRef.current;
+          if (!cur || cur.id !== me.id || cur.role !== me.role || cur.name !== me.name) {
+            setUser(me);
+          }
           return;
         }
         // No profile row — only treat as signed-out on explicit sign-in; keep sticky session on refresh.
@@ -86,8 +97,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     void boot();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "INITIAL_SESSION") return;
+      // TOKEN_REFRESHED fires every ~55 minutes (Supabase JWT lifetime).
+      // Only persist the new tokens — do NOT call applySessionUser which
+      // calls getMe() → creates new user object → setUser() → full re-render.
+      if (event === "TOKEN_REFRESHED") {
+        if (session?.access_token) void persistAuthToken(session.access_token);
+        if (session?.refresh_token) void persistRefreshToken(session.refresh_token);
+        return;
+      }
       void (async () => {
         if (!mounted) return;
         if (event === "SIGNED_OUT") {
@@ -98,9 +117,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })();
     });
 
+    let lastFgRefreshMs = 0;
     const appStateSub = AppState.addEventListener("change", (state) => {
-      if (state === "active") supabase.auth.startAutoRefresh();
-      else supabase.auth.stopAutoRefresh();
+      if (state === "active") {
+        supabase.auth.startAutoRefresh();
+        // Throttle to once per 5 min — prevents TOKEN_REFRESHED spam on every
+        // foreground transition (lock/unlock, app switch, etc.)
+        const now = Date.now();
+        if (now - lastFgRefreshMs > 5 * 60 * 1000) {
+          lastFgRefreshMs = now;
+          supabase.auth.refreshSession().catch(() => {});
+        }
+      } else {
+        supabase.auth.stopAutoRefresh();
+      }
     });
 
     return () => {
@@ -128,7 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const LOCATION_TASK_NAME = "neelgund-background-location";
       const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => false);
       if (isRunning) {
-        await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => {});
+        await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME).catch(() => { });
       }
       await wipeAllTrackingQueues();
     } catch {

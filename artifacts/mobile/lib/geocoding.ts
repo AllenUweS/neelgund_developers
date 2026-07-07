@@ -1,19 +1,12 @@
 /**
- * geocoding.ts  (updated — uses Google Geocoding API)
- * Replaces the old OpenStreetMap Nominatim implementation.
+ * geocoding.ts  (updated — fetches Google Maps key from DB via getGoogleMapsKey())
  *
  * API docs: https://developers.google.com/maps/documentation/geocoding/requests-reverse-geocoding
- *
- * FIXES applied vs original:
- *   1. AsyncStorage is no longer imported unconditionally. On web the module
- *      does not exist (or throws at runtime). We now use a platform-safe
- *      storage wrapper: localStorage on web, AsyncStorage on native.
- *   2. Added null/undefined guard on GOOGLE_MAPS_KEY before every fetch.
  */
 
 import { Platform } from "react-native";
 import * as Linking from "expo-linking";
-import { GOOGLE_MAPS_KEY } from "@/lib/googleMapsKey";
+import { getGoogleMapsKey } from "@/lib/googleMapsKey";
 
 export type GeocodingResult = {
   address: string;
@@ -31,43 +24,97 @@ type CacheEntry = {
 };
 
 // ── Platform-safe KV storage ─────────────────────────────────────────────────
-// FIX #1: AsyncStorage does not exist on web. Use localStorage as a shim.
 const kv = {
-  async getItem(key: string): Promise<string | null> {
-    if (Platform.OS === "web") {
-      try {
-        return localStorage.getItem(key);
-      } catch {
-        return null;
-      }
+  async get(k: string): Promise<string | null> {
+    try {
+      if (Platform.OS === "web") return localStorage.getItem(k);
+      const { default: AS } = await import(
+        "@react-native-async-storage/async-storage"
+      );
+      return AS.getItem(k);
+    } catch {
+      return null;
     }
-    // Lazy-require so the native module is only loaded on native platforms.
-    const AsyncStorage = require("@react-native-async-storage/async-storage").default;
-    return AsyncStorage.getItem(key);
   },
-  async setItem(key: string, value: string): Promise<void> {
-    if (Platform.OS === "web") {
-      try {
-        localStorage.setItem(key, value);
-      } catch {
-        // Ignore quota errors
+  async set(k: string, v: string): Promise<void> {
+    try {
+      if (Platform.OS === "web") {
+        localStorage.setItem(k, v);
+      } else {
+        const { default: AS } = await import(
+          "@react-native-async-storage/async-storage"
+        );
+        await AS.setItem(k, v);
       }
-      return;
-    }
-    const AsyncStorage = require("@react-native-async-storage/async-storage").default;
-    return AsyncStorage.setItem(key, value);
+    } catch { }
   },
 };
 
+// ── Cache helpers ────────────────────────────────────────────────────────────
+async function getCachedAddress(cacheKey: string): Promise<string | null> {
+  try {
+    const raw = await kv.get(`${CACHE_KEY}_${cacheKey}`);
+    if (!raw) return null;
+    const entry: CacheEntry = JSON.parse(raw);
+    if (Date.now() - entry.timestamp > CACHE_DURATION) return null;
+    return entry.address;
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedAddress(
+  cacheKey: string,
+  address: string
+): Promise<void> {
+  const entry: CacheEntry = { address, timestamp: Date.now() };
+  await kv.set(`${CACHE_KEY}_${cacheKey}`, JSON.stringify(entry));
+}
+
+// ── Address parsing ──────────────────────────────────────────────────────────
+type GoogleAddressComponent = {
+  long_name: string;
+  short_name: string;
+  types: string[];
+};
+
+function extractLandmarkName(components: GoogleAddressComponent[]): string {
+  const pick = (type: string) =>
+    components.find((c) => c.types.includes(type))?.long_name ?? "";
+
+  const locality = pick("locality") || pick("sublocality_level_1");
+  const admin2 = pick("administrative_area_level_2");
+  const admin1 = pick("administrative_area_level_1");
+
+  if (locality && admin1) return `${locality}, ${admin1}`;
+  if (admin2 && admin1) return `${admin2}, ${admin1}`;
+  if (admin1) return admin1;
+  return "";
+}
+
+function parseGoogleAddress(formatted: string): GeocodingResult {
+  const parts = formatted.split(",").map((p) => p.trim());
+  return {
+    address: formatted,
+    city: parts[1] ?? undefined,
+    state: parts[2] ?? undefined,
+    country: parts[parts.length - 1] ?? undefined,
+  };
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
 /**
- * Reverse-geocode a lat/lng coordinate into a human-readable address
- * using the Google Geocoding API. Results are cached for 24 hours.
+ * Reverse-geocodes a lat/lng pair using the Google Geocoding API.
+ * Results are cached for 24 hours.
+ *
+ * FIX: No longer filters by result_type, so works for all Indian coordinates.
  */
 export async function reverseGeocode(
   lat: number,
   lng: number
 ): Promise<GeocodingResult | null> {
-  if (!GOOGLE_MAPS_KEY) return null;
+  const key = await getGoogleMapsKey();
+  if (!key) return null;
 
   try {
     const cacheKey = `${lat.toFixed(6)}_${lng.toFixed(6)}`;
@@ -76,103 +123,84 @@ export async function reverseGeocode(
 
     const url =
       `https://maps.googleapis.com/maps/api/geocode/json` +
-      `?latlng=${lat},${lng}&result_type=street_address|locality` +
-      `&key=${GOOGLE_MAPS_KEY}`;
+      `?latlng=${lat},${lng}` +
+      `&key=${key}`;
 
     const response = await fetch(url);
     if (!response.ok) throw new Error("Geocoding request failed");
 
     const data = await response.json();
-
     if (data.status !== "OK" || !data.results?.length) return null;
 
-    // Use the most detailed result
     const best = data.results[0];
-    const address: string =
-      best.formatted_address ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    const components: GoogleAddressComponent[] =
+      best.address_components ?? [];
+    const label =
+      extractLandmarkName(components) || best.formatted_address || "";
 
-    // Extract components
-    let city: string | undefined;
-    let state: string | undefined;
-    let country: string | undefined;
-
-    for (const comp of best.address_components ?? []) {
-      if (comp.types.includes("locality")) city = comp.long_name;
-      if (comp.types.includes("administrative_area_level_1"))
-        state = comp.long_name;
-      if (comp.types.includes("country")) country = comp.long_name;
-    }
-
-    await cacheAddress(cacheKey, address);
-
-    return { address, city, state, country };
-  } catch (error) {
-    console.error("Reverse geocoding error:", error);
+    await setCachedAddress(cacheKey, label);
+    return parseGoogleAddress(label);
+  } catch (err) {
+    console.warn("[Geocoding] Error:", err);
     return null;
   }
 }
 
-function parseGoogleAddress(address: string): GeocodingResult {
-  const parts = address.split(",").map((p) => p.trim());
-  return {
-    address,
-    city: parts[parts.length - 3] || undefined,
-    state: parts[parts.length - 2] || undefined,
-    country: parts[parts.length - 1] || undefined,
-  };
-}
+/**
+ * Forward-geocodes a text query using the Google Geocoding API.
+ */
+export async function forwardGeocode(
+  query: string
+): Promise<{ lat: number; lng: number; address: string } | null> {
+  const key = await getGoogleMapsKey();
+  if (!key) return null;
 
-async function getCachedAddress(key: string): Promise<string | null> {
   try {
-    const cacheJson = await kv.getItem(CACHE_KEY);
-    if (!cacheJson) return null;
-    const cache: Record<string, CacheEntry> = JSON.parse(cacheJson);
-    const entry = cache[key];
-    if (!entry) return null;
-    if (Date.now() - entry.timestamp > CACHE_DURATION) {
-      delete cache[key];
-      await kv.setItem(CACHE_KEY, JSON.stringify(cache));
-      return null;
-    }
-    return entry.address;
-  } catch {
+    const url =
+      `https://maps.googleapis.com/maps/api/geocode/json` +
+      `?address=${encodeURIComponent(query)}` +
+      `&key=${key}`;
+
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Forward geocoding request failed");
+
+    const data = await response.json();
+    if (data.status !== "OK" || !data.results?.length) return null;
+
+    const result = data.results[0];
+    const { lat, lng } = result.geometry.location;
+    return { lat, lng, address: result.formatted_address };
+  } catch (err) {
+    console.warn("[Geocoding] Forward error:", err);
     return null;
   }
 }
 
-async function cacheAddress(key: string, address: string): Promise<void> {
-  try {
-    const cacheJson = await kv.getItem(CACHE_KEY);
-    const cache: Record<string, CacheEntry> = cacheJson
-      ? JSON.parse(cacheJson)
-      : {};
-    cache[key] = { address, timestamp: Date.now() };
-
-    // Trim cache to 100 entries (oldest first)
-    const keys = Object.keys(cache);
-    if (keys.length > 100) {
-      const sorted = keys.sort(
-        (a, b) => cache[a].timestamp - cache[b].timestamp
-      );
-      for (let i = 0; i < 10; i++) delete cache[sorted[i]];
-    }
-
-    await kv.setItem(CACHE_KEY, JSON.stringify(cache));
-  } catch (error) {
-    console.error("Cache error:", error);
-  }
-}
-
-/** Open a lat/lng in Google Maps (web or native) */
-export function openInGoogleMaps(lat: number, lng: number): void {
-  const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    window.open(url, "_blank");
-  } else {
-    Linking.openURL(url);
-  }
+/**
+ * Opens the native maps app with directions to a given lat/lng.
+ */
+export function openInMaps(lat: number, lng: number, label?: string): void {
+  const encoded = encodeURIComponent(label ?? `${lat},${lng}`);
+  const url =
+    Platform.OS === "ios"
+      ? `maps://?q=${encoded}&ll=${lat},${lng}`
+      : `geo:${lat},${lng}?q=${encoded}`;
+  Linking.openURL(url).catch(() => {
+    Linking.openURL(
+      `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`
+    );
+  });
 }
 
 export function formatCoordinates(lat: number, lng: number): string {
-  return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+export function openInGoogleMaps(lat: number, lng: number, label?: string): void {
+  openInMaps(lat, lng, label);
+}
+
+export async function getNearestLandmark(lat: number, lng: number): Promise<string> {
+  const result = await reverseGeocode(lat, lng);
+  return result?.address || formatCoordinates(lat, lng);
 }

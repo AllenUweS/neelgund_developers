@@ -45,9 +45,8 @@ export default function MoreScreen() {
   const role = user?.role ?? "employee";
 
   const isHr = role === "hr" || role === "admin" || role === "super_admin";
-  const canViewTracking = role === "manager" || role === "admin" || role === "super_admin";
   const isSuperAdmin = role === "admin" || role === "super_admin";
-  const canManageRegularizations = role === "manager" || role === "admin" || role === "super_admin";
+  const canManageRegularizations = role === "hr" || role === "manager" || role === "admin" || role === "super_admin";
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
   const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0) + 90;
@@ -98,7 +97,7 @@ export default function MoreScreen() {
           </View>
         ) : null}
 
-        {(isHr || canViewTracking || isSuperAdmin) ? (
+        {(isHr || canManageRegularizations || isSuperAdmin) ? (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Admin Tools</Text>
             {isHr ? (
@@ -121,16 +120,7 @@ export default function MoreScreen() {
                 onPress={() => router.push("/regularizations")}
               />
             ) : null}
-            {canViewTracking ? (
-              <ActionCard
-                title="Tracking Status"
-                subtitle="Monitor tracker health and permissions"
-                icon="pulse-outline"
-                iconColor={C.accent}
-                iconBg={C.accent + "1C"}
-                onPress={() => router.push("/(tabs)/tracking-status")}
-              />
-            ) : null}
+
             {isSuperAdmin ? (
               <ActionCard
                 title="Super Admin Console"

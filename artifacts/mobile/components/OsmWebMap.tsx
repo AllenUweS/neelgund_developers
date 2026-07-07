@@ -52,6 +52,8 @@ const HTML = `<!DOCTYPE html>
   .osm-pin-dot { position: absolute; top: 0; left: 0; width: 22px; height: 22px; border-radius: 11px; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.35); }
   .osm-number-pin { width: 34px; height: 34px; border-radius: 17px; background: #F4A820; color: white; display: flex; align-items: center; justify-content: center; font: 700 16px system-ui, -apple-system, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(255,255,255,0.9); }
   .osm-vehicle-pin { width: 30px; height: 30px; border-radius: 15px; background: #0B3A57; color: white; display: flex; align-items: center; justify-content: center; font: 700 14px system-ui, -apple-system, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,0.35); border: 2px solid white; }
+  .osm-photo-pin { width: 38px; height: 38px; border-radius: 19px; border: 3px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.4); overflow: hidden; background: #e8eef5; }
+  .osm-photo-pin img { width: 38px; height: 38px; object-fit: cover; display: block; border-radius: 50%; }
 </style>
 </head>
 <body>
@@ -115,6 +117,14 @@ const HTML = `<!DOCTYPE html>
 
     function markerIcon(m) {
       var label = m && m.label != null ? String(m.label) : '';
+      if (m && m.photoUrl) {
+        return L.divIcon({
+          className: '',
+          html: '<div class="osm-photo-pin"><img src="' + m.photoUrl + '" onerror="this.parentNode.innerHTML=\'<span style=font-size:18px;line-height:38px;text-align:center;display:block>'+label+'</span>\'"/></div>',
+          iconSize: [38, 38],
+          iconAnchor: [19, 19]
+        });
+      }
       if (m && m.variant === 'number') {
         return L.divIcon({
           className: '',

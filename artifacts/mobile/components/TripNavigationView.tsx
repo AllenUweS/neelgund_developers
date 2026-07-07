@@ -40,7 +40,9 @@ type Props = {
   onDateChange: (date: string) => void;
   topPad: number;
   bottomPad: number;
+  employeeId?: string | null;
   employeeName?: string | null;
+  profilePhotoUrl?: string | null;
   onBack?: () => void;
 };
 
@@ -108,7 +110,9 @@ export function TripNavigationView({
   onDateChange,
   topPad,
   bottomPad,
+  employeeId,
   employeeName,
+  profilePhotoUrl,
   onBack,
 }: Props) {
   const [sheetExpanded, setSheetExpanded] = useState(false);
@@ -182,16 +186,50 @@ export function TripNavigationView({
   const dateObj = new Date(selectedDate + "T00:00:00");
   const isToday = selectedDate === todayLocal();
 
+  // Track whether the date changed so we can jump to index 0 on a new date
+  // (instead of clamping to the last position, which is confusing after a date switch).
+  const prevSelectedDateRef = useRef(selectedDate);
   useEffect(() => {
-    setCurrentIndex((index) => Math.min(index, Math.max(points.length - 1, 0)));
+    const dateChanged = prevSelectedDateRef.current !== selectedDate;
+    prevSelectedDateRef.current = selectedDate;
+    if (dateChanged) {
+      // A new date was selected — start replay from the beginning.
+      setCurrentIndex(0);
+    } else {
+      // Same date, trail just grew — clamp to valid range.
+      setCurrentIndex((index) => Math.min(index, Math.max(points.length - 1, 0)));
+    }
     setIsPlaying(false);
     setInterpPos(null);
     interpolatedPosRef.current = null;
   }, [points.length, selectedDate]);
 
-  // Client-side map matching fallback
+  // Client-side map matching fallback.
+  // IMPORTANT: Road-snapping is only applied when the trip looks like a
+  // one-way route (net displacement > 50 m). For back-and-forth walks on
+  // the same path the snapping API merges the two directions into a single
+  // forward stroke, completely hiding the return leg. We detect this by
+  // comparing net displacement vs total distance — if the ratio is < 0.3
+  // (i.e. you came back close to where you started) we skip snapping and
+  // draw the raw GPS polyline which faithfully shows both legs.
   useEffect(() => {
     if (matchedRoute && matchedRoute.length >= 2) {
+      // Check back-and-forth ratio before accepting backend-matched route
+      if (points.length >= 2) {
+        const first = points[0];
+        const last  = points[points.length - 1];
+        const netDisplacement = haversineMeters(first, last);
+        const totalDist = points.reduce((sum, p, i) => {
+          if (i === 0) return sum;
+          return sum + haversineMeters(points[i - 1], p);
+        }, 0);
+        // If less than 30% net displacement vs total distance → back-and-forth walk
+        // Use raw polyline so both legs are visible
+        if (totalDist > 0 && netDisplacement / totalDist < 0.3) {
+          setClientMatchedRoute(null);
+          return;
+        }
+      }
       setClientMatchedRoute(matchedRoute);
       return;
     }
@@ -199,9 +237,24 @@ export function TripNavigationView({
       setClientMatchedRoute(null);
       return;
     }
+    // Same back-and-forth check before requesting client-side snapping
+    const first = points[0];
+    const last  = points[points.length - 1];
+    const netDisplacement = haversineMeters(first, last);
+    const totalDist = points.reduce((sum, p, i) => {
+      if (i === 0) return sum;
+      return sum + haversineMeters(points[i - 1], p);
+    }, 0);
+    if (totalDist > 0 && netDisplacement / totalDist < 0.3) {
+      // Back-and-forth detected — skip snapping, use raw GPS points
+      setClientMatchedRoute(null);
+      return;
+    }
     let cancelled = false;
     setIsMatching(true);
-    matchTrail(points, employeeName || "unknown", selectedDate).then((result) => {
+    // Use employeeId for stable cache key; fall back to name then "unknown"
+    const cacheId = employeeId || employeeName || "unknown";
+    matchTrail(points, cacheId, selectedDate).then((result) => {
       if (!cancelled) setClientMatchedRoute(result?.coordinates ?? null);
       setIsMatching(false);
     });
@@ -272,8 +325,9 @@ export function TripNavigationView({
 
       const curr = points[idx];
       const next = points[idx + 1];
-      const timeGapMs = new Date(next.recordedAt).getTime() - new Date(curr.recordedAt).getTime();
-      const delay = Math.max(MIN_DELAY_MS, Math.min(MAX_DELAY_MS, timeGapMs / speed));
+      const timeGapMs = Math.max(0, new Date(next.recordedAt).getTime() - new Date(curr.recordedAt).getTime());
+      const baseDelay = Math.min(MAX_DELAY_MS, timeGapMs);
+      const delay = Math.max(16, baseDelay / speed);
 
       segmentStartWall = performance.now();
       segmentDurationWall = delay;
@@ -346,8 +400,13 @@ export function TripNavigationView({
         variant: "vehicle" as const,
       });
     }
-    // Stop markers
-    summary.stops.forEach((stop) => {
+    // Only show stops that lasted >= 5 minutes on the map.
+    // Micro-stops (< 1 min) and brief pauses are excluded to keep the map clean —
+    // they appear in the Trip Timeline list but are too transient to warrant a pin.
+    const MARKER_STOP_MIN_MS = 5 * 60 * 1000; // 5 minutes
+    summary.stops
+      .filter((stop) => stop.durationMs >= MARKER_STOP_MIN_MS)
+      .forEach((stop) => {
       result.push({
         id: stop.id,
         lat: stop.latitude,
@@ -358,31 +417,11 @@ export function TripNavigationView({
         variant: "number" as const,
       });
     });
-    // Playback position marker — use smooth interpolated position during replay
-    if (activePoint) {
-      const playLat = (isPlaying && interpPos) ? interpPos.lat : activePoint.latitude;
-      const playLng = (isPlaying && interpPos) ? interpPos.lng : activePoint.longitude;
-      const nextPoint = points[currentIndex + 1];
-      let bearing = 0;
-      if (nextPoint) {
-        const dLng = (nextPoint.longitude - playLng) * (Math.PI / 180);
-        const lat1 = playLat * (Math.PI / 180);
-        const lat2 = nextPoint.latitude * (Math.PI / 180);
-        const y = Math.sin(dLng) * Math.cos(lat2);
-        const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-        bearing = (Math.atan2(y, x) * 180) / Math.PI;
-        bearing = (bearing + 360) % 360;
-      }
-      result.push({
-        id: "playback",
-        lat: playLat,
-        lng: playLng,
-        title: "Playback position",
-        color: "blue" as const,
-        label: "▶",
-        variant: "vehicle" as const,
-      });
-    }
+    // NOTE: The playback marker is intentionally NOT included here.
+    // It is passed as the dedicated `playbackMarker` prop to GoogleMapsWebMap,
+    // which uses a fast updatePlaybackMarker() path that does NOT call setMarkers().
+    // Including it here caused setMarkers() to run on every animation frame,
+    // destroying and recreating all markers 60x/second — causing the glitch.
     // My Location marker
     if (myLocationCenter) {
       result.push({
@@ -395,7 +434,37 @@ export function TripNavigationView({
       });
     }
     return result;
-  }, [activePoint, summary.stops, points, currentIndex, myLocationCenter]);
+  }, [activePoint, summary.stops, points, currentIndex, myLocationCenter]);  // interpPos/isPlaying intentionally excluded — playback uses separate prop
+
+
+  // Dedicated playback marker — computed separately so it goes through
+  // updatePlaybackMarker() in the WebView, NOT through setMarkers().
+  // This is the key fix: updating the car icon position never re-renders
+  // static markers (start, end, stops).
+  const playbackMarker = useMemo<import("@/components/GoogleMapsWebMap").PlaybackMarkerData | null>(() => {
+    if (!activePoint) return null;
+    const playLat = (isPlaying && interpPos) ? interpPos.lat : activePoint.latitude;
+    const playLng = (isPlaying && interpPos) ? interpPos.lng : activePoint.longitude;
+    const nextPoint = points[currentIndex + 1];
+    let bearing = 0;
+    if (nextPoint) {
+      const dLng = (nextPoint.longitude - playLng) * (Math.PI / 180);
+      const lat1 = playLat * (Math.PI / 180);
+      const lat2 = nextPoint.latitude * (Math.PI / 180);
+      const y = Math.sin(dLng) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+      bearing = (Math.atan2(y, x) * 180) / Math.PI;
+      bearing = (bearing + 360) % 360;
+    }
+    const speedLabel = activePoint.speedKmh != null ? `${Math.round(activePoint.speedKmh)} km/h` : "";
+    return {
+      lat: playLat,
+      lng: playLng,
+      bearing,
+      label: speedLabel,
+      photoUrl: profilePhotoUrl ?? undefined,
+    };
+  }, [activePoint, isPlaying, interpPos, points, currentIndex]);
 
   const center = useMemo<LatLng | null>(() => {
     if (myLocationCenter) return myLocationCenter;
@@ -470,6 +539,7 @@ export function TripNavigationView({
         markers={markers}
         polyline={polyline}
         routePolyline={routePolyline}
+        playbackMarker={playbackMarker}
         traveledPolyline={isPlaying && currentIndex > 0 ? polyline.slice(0, currentIndex + 1) : []}
         remainingPolyline={isPlaying && currentIndex < polyline.length - 1 ? polyline.slice(currentIndex) : []}
         fitToPolyline={polyline.length >= 2}
@@ -501,7 +571,7 @@ export function TripNavigationView({
 
       {/* Navigation Banner */}
       {directions && directions.legs.length > 0 && (
-        <View style={[styles.navBanner, { top: topPad + 56 }]}>
+        <View style={[styles.navBanner, { top: topPad + 68 }]}>
           <TouchableOpacity style={styles.navBannerInner} onPress={() => setShowTurnList(true)}>
             <Ionicons name="navigate" size={18} color={C.brand} />
             <View style={{ flex: 1 }}>
@@ -517,7 +587,37 @@ export function TripNavigationView({
         </View>
       )}
 
-      <View style={[styles.tileSwitch, { top: topPad + 72 + (directions && directions.legs.length > 0 ? 50 : 0) }]}>
+      {/* ── Floating Date Selector ──────────────────────────── */}
+      {!sheetExpanded && (
+        <View style={[styles.floatingDateNav, { top: topPad + (directions && directions.legs.length > 0 ? 130 : 68) }]}>
+          <TouchableOpacity style={styles.floatingDateBtn} onPress={goBackDate}>
+            <Ionicons name="chevron-back" size={16} color={C.text} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.floatingDateMain} onPress={() => setShowPicker(true)} activeOpacity={0.86}>
+            <Ionicons name="calendar-outline" size={14} color={C.brand} />
+            <Text style={styles.floatingDateText}>{formatDateLabel(selectedDate)}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.floatingDateBtn, isToday && styles.floatingDateBtnDisabled]} onPress={goForwardDate} disabled={isToday}>
+            <Ionicons name="chevron-forward" size={16} color={isToday ? C.border : C.text} />
+          </TouchableOpacity>
+        </View>
+      )}
+      
+      {/* ── Floating Date Picker Modal ────────────────────────────── */}
+      {showPicker && NativeDatePicker && !sheetExpanded ? (
+        <NativeDatePicker
+          mode="date"
+          value={dateObj}
+          maximumDate={new Date()}
+          display={Platform.OS === "ios" ? "spinner" : "default"}
+          onChange={(_evt: { type: string }, date?: Date) => {
+            setShowPicker(Platform.OS === "ios");
+            if (date) onDateChange(localDateStr(date));
+          }}
+        />
+      ) : null}
+
+      <View style={[styles.tileSwitch, { top: topPad + 90 + (directions && directions.legs.length > 0 ? 54 : 0) }]}>
         {(["map", "satellite"] as const).map((mode) => (
           <TouchableOpacity
             key={mode}
@@ -557,7 +657,7 @@ export function TripNavigationView({
       </View>
 
       {points.length >= 2 && currentIndex > 0 ? (
-        <View style={[styles.speedBubble, { top: topPad + 130 }]}>
+        <View style={[styles.speedBubble, { top: topPad + 110 }]}>
           <Text style={styles.speedValue}>
             {(() => {
               const curr = points[currentIndex];
@@ -586,7 +686,7 @@ export function TripNavigationView({
       ) : null}
 
       {isMatching ? (
-        <View style={[styles.snappingBadge, { top: topPad + 56 + (directions && directions.legs.length > 0 ? 50 : 0) }]} pointerEvents="none">
+        <View style={[styles.snappingBadge, { top: topPad + 68 + (directions && directions.legs.length > 0 ? 54 : 0) }]} pointerEvents="none">
           <ActivityIndicator size="small" color={C.brand} />
           <Text style={styles.snappingText}>Snapping to roads…</Text>
         </View>
@@ -756,8 +856,8 @@ function BatterySparkline({ points }: { points: LocationPoint[] }) {
 function MetricsRow({ summary }: { summary: ReturnType<typeof deriveTripSummary> }) {
   const hasGaps = summary.gaps.length > 0;
   const stopBreakdown = summary.stops.length > 0
-    ? `M${summary.microStops} · S${summary.shortStops} · L${summary.longStops} · O${summary.overnightStops}`
-    : "No stops";
+    ? `S${summary.shortStops} · L${summary.longStops} · O${summary.overnightStops}`
+    : "No stops (≥5 min)";
   return (
     <View style={styles.metrics}>
       <Metric color="#10B981" icon="ellipse" label="Travelled" value={formatDistance(summary.distanceMeters)} sub={formatDuration(summary.drivingDurationMs)} />
@@ -787,7 +887,7 @@ function Metric({
   return (
     <View style={styles.metric}>
       <View style={styles.metricLabelRow}>
-        <Ionicons name={icon} size={17} color={color} />
+        <Ionicons name={icon} size={13} color={color} />
         <Text style={[styles.metricLabel, { color }]} numberOfLines={1}>
           {label}
         </Text>
@@ -861,7 +961,7 @@ function CollapsedSheet({
       <MetricsRow summary={summary} />
       <View style={styles.statusRow}>
         <View style={[styles.stopIcon, isPlaying && { backgroundColor: "#3B82F6" }]}>
-          <Ionicons name={isPlaying ? "play" : isToday ? (summary.currentMovement === "moving" ? "car-sport" : "pause") : "flag"} size={22} color="#fff" />
+          <Ionicons name={isPlaying ? "play" : isToday ? (summary.currentMovement === "moving" ? "walk" : "pause") : "flag"} size={16} color="#fff" />
         </View>
         <View style={styles.statusCopy}>
           <Text style={styles.statusTitle}>{isPlaying ? "Replaying" : isToday ? (summary.currentMovement === "moving" ? "Moving" : "Stopped") : "Trip ended"}</Text>
@@ -871,7 +971,7 @@ function CollapsedSheet({
           </Text>
         </View>
         <TouchableOpacity style={[styles.playMini, !canPlay && styles.disabled]} disabled={!canPlay} onPress={() => setIsPlaying(!isPlaying)}>
-          <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="#fff" />
+          <Ionicons name={isPlaying ? "pause" : "play"} size={14} color="#fff" />
         </TouchableOpacity>
       </View>
     </>
@@ -1018,13 +1118,13 @@ function ExpandedSheet({
       <View style={styles.speedRow}>
         {SPEEDS.map((candidate) => {
           const labels: Record<number, string> = {
-            0.25: "Slow",
-            0.5: "Half",
-            0.75: "3/4",
-            1: "Normal",
-            2: "Fast",
-            4: "2x",
-            8: "Max",
+            0.25: "0.25x",
+            0.5: "0.5x",
+            0.75: "0.75x",
+            1: "1x",
+            2: "2x",
+            4: "4x",
+            8: "8x",
           };
           return (
             <TouchableOpacity
@@ -1068,7 +1168,11 @@ function ExpandedSheet({
 
       <Text style={styles.historyTab}>TRIP TIMELINE</Text>
       {summary.timeline.length > 0 ? (
-        summary.timeline.map((item) => (
+        summary.timeline
+          // Only show stops that lasted 5 minutes or more; brief pauses are not
+          // considered stops and should not appear in the trail timeline.
+          .filter((item) => item.type !== "stop" || item.durationMs >= 5 * 60 * 1000)
+          .map((item) => (
           <TimelineItem
             key={item.id}
             item={item}
@@ -1110,22 +1214,77 @@ function ExpandedSheet({
   );
 }
 
+function useReverseGeocode(lat?: number, lng?: number, initialAddress?: string | null) {
+  const [address, setAddress] = useState<string | null>(initialAddress || null);
+
+  useEffect(() => {
+    if (initialAddress) {
+      setAddress(initialAddress);
+      return;
+    }
+    if (lat === undefined || lng === undefined) return;
+
+    let cancelled = false;
+
+    async function fetchGeo() {
+      try {
+        if (Platform.OS === "web") {
+          const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY;
+          if (apiKey) {
+            const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`);
+            const data = await res.json();
+            if (!cancelled && data.results && data.results.length > 0) {
+              // Try to find a concise address (like street + city)
+              const addr = data.results[0].formatted_address;
+              // Strip zip codes and countries if possible, or just use formatted
+              setAddress(addr.split(',').slice(0, 3).join(','));
+            }
+          }
+        } else {
+          const res = await Location.reverseGeocodeAsync({ latitude: lat!, longitude: lng! });
+          if (!cancelled && res && res[0]) {
+            const r = res[0];
+            const parts = [];
+            if (r.name) parts.push(r.name);
+            else if (r.street) parts.push(r.street);
+            if (r.city || r.subregion || r.district) parts.push(r.city || r.subregion || r.district);
+            if (parts.length > 0) setAddress(parts.join(", "));
+          }
+        }
+      } catch (err) {
+        // silently fallback to coordinates
+      }
+    }
+
+    fetchGeo();
+    return () => { cancelled = true; };
+  }, [lat, lng, initialAddress]);
+
+  return address;
+}
+
 function TimelineItem({ item, onPress, points }: { item: TripTimelineItem; onPress?: () => void; points: LocationPoint[] }) {
   const Wrapper = onPress ? TouchableOpacity : View;
   const wrapperProps = onPress ? { onPress, activeOpacity: 0.7 } : {};
 
+  const drivingStartPoint = item.type === "driving" ? points[item.startIndex] : undefined;
+  const drivingEndPoint = item.type === "driving" ? points[item.endIndex] : undefined;
+  const startAddrState = useReverseGeocode(drivingStartPoint?.latitude, drivingStartPoint?.longitude, (item as any).startAddress);
+  const endAddrState = useReverseGeocode(drivingEndPoint?.latitude, drivingEndPoint?.longitude, (item as any).endAddress);
+  const stopAddrState = useReverseGeocode((item as any).latitude, (item as any).longitude, (item as any).address);
+
   if (item.type === "driving") {
     const startPoint = points[item.startIndex];
     const endPoint = points[item.endIndex];
-    const startAddr = item.startAddress ?? coordinateLabel(startPoint?.latitude ?? 0, startPoint?.longitude ?? 0);
-    const endAddr = item.endAddress ?? coordinateLabel(endPoint?.latitude ?? 0, endPoint?.longitude ?? 0);
+    const startAddr = startAddrState ?? coordinateLabel(startPoint?.latitude ?? 0, startPoint?.longitude ?? 0);
+    const endAddr = endAddrState ?? coordinateLabel(endPoint?.latitude ?? 0, endPoint?.longitude ?? 0);
     return (
       <Wrapper style={styles.timelineDrive} {...wrapperProps}>
         <View style={styles.timelineLine} />
         <View style={styles.timelineContent}>
           <View style={styles.driveTitle}>
-            <Ionicons name="car-sport-outline" size={18} color="#6B7280" />
-            <Text style={styles.driveText}>Driving</Text>
+            <Ionicons name="walk-outline" size={18} color="#6B7280" />
+            <Text style={styles.driveText}>Moving</Text>
           </View>
           <Text style={styles.driveMeta}>
             {formatSegmentDuration(item.durationMs)} · {(item.distanceMeters / 1000).toFixed(1)} km
@@ -1160,20 +1319,18 @@ function TimelineItem({ item, onPress, points }: { item: TripTimelineItem; onPre
     );
   }
 
-  const address = item.address ?? coordinateLabel(item.latitude, item.longitude);
-  const stopTypeLabel = (item as any).stopType
-    ? String((item as any).stopType).charAt(0).toUpperCase() + String((item as any).stopType).slice(1)
-    : "Stop";
+  const address = stopAddrState ?? coordinateLabel(item.latitude, item.longitude);
+  const stopTypeLabel = "Stop";
+  // All stops shown are ≥ 5 minutes. Color by stop type:
+  // short (5–15 min) → blue, long (15–60 min) → purple, overnight (60+ min) → red
   const stopTypeColor =
-    (item as any).stopType === "micro"
-      ? "#F59E0B"
-      : (item as any).stopType === "short"
-        ? "#3B82F6"
-        : (item as any).stopType === "long"
-          ? "#8B5CF6"
-          : (item as any).stopType === "overnight"
-            ? "#EF4444"
-            : C.accent;
+    (item as any).stopType === "short"
+      ? "#3B82F6"
+      : (item as any).stopType === "long"
+        ? "#8B5CF6"
+        : (item as any).stopType === "overnight"
+          ? "#EF4444"
+          : C.accent;
   return (
     <Wrapper style={styles.timelineStop} {...wrapperProps}>
       <View style={[styles.stopTimelineIcon, { backgroundColor: stopTypeColor }]}>
@@ -1199,18 +1356,62 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    minHeight: 82,
+    minHeight: 64,
     backgroundColor: "#fff",
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 18,
-    paddingBottom: 12,
-    gap: 14,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+    gap: 10,
     zIndex: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  floatingDateNav: {
+    position: "absolute",
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderRadius: 999,
+    padding: 4,
+    gap: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 5,
+    zIndex: 30,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.05)",
+  },
+  floatingDateBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F3F4F6",
+  },
+  floatingDateBtnDisabled: {
+    opacity: 0.4,
+  },
+  floatingDateMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    height: 32,
+  },
+  floatingDateText: {
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    color: C.text,
   },
   headerIcon: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
   headerIconDisabled: { opacity: 0.35 },
-  headerTitle: { fontSize: 23, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
+  headerTitle: { fontSize: 17, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#EF4444" },
   liveText: { fontSize: 11, fontFamily: "Inter_700Bold", color: "#EF4444", letterSpacing: 0.8 },
   tileSwitch: {
@@ -1223,10 +1424,10 @@ const styles = StyleSheet.create({
     elevation: 5,
     zIndex: 9,
   },
-  tileButton: { paddingHorizontal: 18, paddingVertical: 14, backgroundColor: "rgba(245,245,245,0.96)" },
+  tileButton: { paddingHorizontal: 12, paddingVertical: 9, backgroundColor: "rgba(245,245,245,0.96)" },
   tileButtonActive: { backgroundColor: "#fff" },
-  tileText: { fontSize: 16, fontFamily: "Inter_700Bold", color: C.text },
-  mapControls: { position: "absolute", right: 28, top: "38%", gap: 14, zIndex: 8 },
+  tileText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: C.text },
+  mapControls: { position: "absolute", right: 14, top: "36%", gap: 10, zIndex: 8 },
   trailControlBtn: {
     minWidth: 78,
     height: 46,
@@ -1244,9 +1445,9 @@ const styles = StyleSheet.create({
   },
   trailControlText: { color: "#fff", fontSize: 14, fontFamily: "Inter_700Bold" },
   mapControlBtn: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: "#fff",
     alignItems: "center",
     justifyContent: "center",
@@ -1267,17 +1468,17 @@ const styles = StyleSheet.create({
   },
   speedBubble: {
     position: "absolute",
-    left: 28,
-    bottom: 300,
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    left: 14,
+    bottom: 290,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     backgroundColor: "#073550",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 8,
   },
-  speedValue: { color: "#fff", fontSize: 24, fontFamily: "Inter_700Bold" },
+  speedValue: { color: "#fff", fontSize: 20, fontFamily: "Inter_700Bold" },
   speedUnit: { color: "#fff", fontSize: 13, fontFamily: "Inter_500Medium" },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1325,50 +1526,50 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 12,
   },
-  sheetCollapsed: { paddingTop: 10, paddingHorizontal: 24, minHeight: 270 },
-  sheetExpanded: { top: 92, paddingTop: 8 },
+  sheetCollapsed: { paddingTop: 8, paddingHorizontal: 16, minHeight: 210 },
+  sheetExpanded: { top: 68, paddingTop: 8 },
   handleHit: { alignItems: "center", paddingVertical: 8 },
   handle: { width: 44, height: 6, borderRadius: 3, backgroundColor: "#C9C9C9" },
-  metrics: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", paddingVertical: 14 },
+  metrics: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", paddingVertical: 10 },
   metric: { width: "31%" },
   metricLabelRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  metricLabel: { fontSize: 14, fontFamily: "Inter_700Bold" },
-  metricValue: { marginTop: 7, fontSize: 23, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
-  metricSub: { marginTop: 3, fontSize: 15, fontFamily: "Inter_500Medium", color: "#0B2A3A" },
+  metricLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  metricValue: { marginTop: 4, fontSize: 17, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
+  metricSub: { marginTop: 2, fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280" },
   collapsedTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingTop: 2 },
-  rangeText: { flex: 1, fontSize: 18, fontFamily: "Inter_500Medium", color: "#171717" },
-  tripHistoryButton: { flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 13, paddingVertical: 11, borderRadius: 8, backgroundColor: "#EFEFEF" },
-  trailButton: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 11, borderRadius: 8, backgroundColor: "#EFEFEF" },
-  tripPlayDot: { width: 31, height: 31, borderRadius: 16, backgroundColor: "#073550", alignItems: "center", justifyContent: "center" },
-  tripHistoryText: { fontSize: 18, fontFamily: "Inter_700Bold", color: "#111" },
-  statusRow: { flexDirection: "row", gap: 14, paddingTop: 10, alignItems: "flex-start" },
-  stopIcon: { width: 35, height: 35, borderRadius: 18, backgroundColor: C.accent, alignItems: "center", justifyContent: "center", marginTop: 2 },
+  rangeText: { flex: 1, fontSize: 13, fontFamily: "Inter_500Medium", color: "#171717" },
+  tripHistoryButton: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, backgroundColor: "#EFEFEF" },
+  trailButton: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, backgroundColor: "#EFEFEF" },
+  tripPlayDot: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#073550", alignItems: "center", justifyContent: "center" },
+  tripHistoryText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111" },
+  statusRow: { flexDirection: "row", gap: 10, paddingTop: 6, alignItems: "flex-start" },
+  stopIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.accent, alignItems: "center", justifyContent: "center", marginTop: 2 },
   statusCopy: { flex: 1 },
-  statusTitle: { fontSize: 19, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
-  statusMeta: { marginTop: 4, fontSize: 14, fontFamily: "Inter_500Medium", color: "#6B7280" },
-  statusAddress: { marginTop: 6, fontSize: 15, lineHeight: 20, fontFamily: "Inter_500Medium", color: "#0B2A3A" },
-  playMini: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#073550", alignItems: "center", justifyContent: "center", marginTop: 2 },
+  statusTitle: { fontSize: 14, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
+  statusMeta: { marginTop: 2, fontSize: 11, fontFamily: "Inter_500Medium", color: "#6B7280" },
+  statusAddress: { marginTop: 3, fontSize: 12, lineHeight: 17, fontFamily: "Inter_500Medium", color: "#0B2A3A" },
+  playMini: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#073550", alignItems: "center", justifyContent: "center", marginTop: 2 },
   disabled: { opacity: 0.45 },
-  expandedContent: { paddingBottom: 28 },
-  dateRangeRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: "#E5E7EB", paddingTop: 12 },
+  expandedContent: { paddingBottom: 20 },
+  dateRangeRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, borderTopWidth: 1, borderTopColor: "#E5E7EB", paddingTop: 10 },
   datePill: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#F0F0F0", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10 },
-  datePillText: { fontSize: 18, fontFamily: "Inter_500Medium", color: "#111" },
-  rangeMuted: { flex: 1, fontSize: 18, fontFamily: "Inter_400Regular", color: "#737373" },
+  datePillText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#111" },
+  rangeMuted: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", color: "#737373" },
   closeRound: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#F2F2F2", alignItems: "center", justifyContent: "center" },
-  dateButtons: { flexDirection: "row", gap: 8, paddingHorizontal: 24, paddingTop: 8 },
+  dateButtons: { flexDirection: "row", gap: 6, paddingHorizontal: 16, paddingTop: 6 },
   smallDateBtn: { width: 32, height: 30, borderRadius: 8, backgroundColor: "#F2F2F2", alignItems: "center", justifyContent: "center" },
   todayBtn: { height: 30, borderRadius: 8, backgroundColor: C.brand + "12", borderWidth: 1, borderColor: C.brand + "30", paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
   todayBtnText: { fontSize: 12, fontFamily: "Inter_700Bold", color: C.brand },
-  playbackRow: { flexDirection: "row", alignItems: "center", gap: 18, paddingHorizontal: 24, paddingTop: 24 },
+  playbackRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 14 },
   scrubber: { flex: 1, height: 46, borderRadius: 23, borderWidth: 6, borderColor: "#E5F0E7", justifyContent: "center", backgroundColor: "#fff" },
   scrubberFill: { position: "absolute", left: 0, height: 34, borderRadius: 18, backgroundColor: "rgba(16,185,129,0.13)" },
   scrubberThumb: { position: "absolute", width: 38, height: 38, borderRadius: 19, marginLeft: -19, backgroundColor: "#0E7968", borderWidth: 3, borderColor: "#D1D5DB" },
-  playButton: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#073550", alignItems: "center", justifyContent: "center" },
-  skipButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: "#F2F2F2", alignItems: "center", justifyContent: "center" },
+  playButton: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#073550", alignItems: "center", justifyContent: "center" },
+  skipButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#F2F2F2", alignItems: "center", justifyContent: "center" },
   fullTrailButton: {
-    marginHorizontal: 24,
-    marginTop: 14,
-    minHeight: 44,
+    marginHorizontal: 16,
+    marginTop: 10,
+    minHeight: 38,
     borderRadius: 8,
     backgroundColor: "#073550",
     flexDirection: "row",
@@ -1376,11 +1577,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
   },
-  fullTrailText: { color: "#fff", fontSize: 16, fontFamily: "Inter_700Bold" },
-  speedRow: { flexDirection: "row", gap: 10, paddingHorizontal: 24, paddingTop: 18 },
-  speedBtn: { flex: 1, minHeight: 42, alignItems: "center", justifyContent: "center", borderRadius: 4, backgroundColor: "#EFEFEF" },
+  fullTrailText: { color: "#fff", fontSize: 13, fontFamily: "Inter_700Bold" },
+  speedRow: { flexDirection: "row", gap: 5, paddingHorizontal: 16, paddingTop: 14 },
+  speedBtn: { flex: 1, minHeight: 34, alignItems: "center", justifyContent: "center", borderRadius: 6, backgroundColor: "#EFEFEF" },
   speedBtnActive: { backgroundColor: "#073550" },
-  speedBtnText: { fontSize: 18, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
+  speedBtnText: { fontSize: 11, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
   speedBtnTextActive: { color: "#fff" },
   historyTab: {
     alignSelf: "center",
@@ -1412,10 +1613,10 @@ const styles = StyleSheet.create({
   timelineStop: { flexDirection: "row", paddingHorizontal: 24, paddingVertical: 8 },
   stopTimelineIcon: { width: 35, height: 35, borderRadius: 18, backgroundColor: C.accent, alignItems: "center", justifyContent: "center", marginLeft: 3, marginRight: 34 },
   stopTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  stopTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
-  stopDuration: { fontSize: 16, fontFamily: "Inter_500Medium", color: C.accent },
-  stopTime: { marginTop: 6, fontSize: 15, fontFamily: "Inter_400Regular", color: "#737373" },
-  stopAddress: { marginTop: 7, fontSize: 16, lineHeight: 21, fontFamily: "Inter_400Regular", color: "#737373" },
+  stopTitle: { fontSize: 14, fontFamily: "Inter_700Bold", color: "#0B2A3A" },
+  stopDuration: { fontSize: 12, fontFamily: "Inter_500Medium", color: C.accent },
+  stopTime: { marginTop: 3, fontSize: 11, fontFamily: "Inter_400Regular", color: "#737373" },
+  stopAddress: { marginTop: 3, fontSize: 12, lineHeight: 17, fontFamily: "Inter_400Regular", color: "#737373" },
   emptyTrip: { alignItems: "center", gap: 8, paddingVertical: 34 },
   emptyText: { fontSize: 14, fontFamily: "Inter_500Medium", color: C.textSecondary, textAlign: "center" },
   emptyAction: {

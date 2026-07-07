@@ -10,6 +10,9 @@ export function EmployeeTrailView({
   onDateChange,
   topPad,
   bottomPad,
+  employeeId,
+  employeeName,
+  profilePhotoUrl,
 }: {
   trail: LocationPoint[];
   matchedRoute?: number[][] | null;
@@ -18,6 +21,9 @@ export function EmployeeTrailView({
   onDateChange: (date: string) => void;
   topPad: number;
   bottomPad: number;
+  employeeId?: string | null;
+  employeeName?: string | null;
+  profilePhotoUrl?: string | null;
 }) {
   return (
     <TripNavigationView
@@ -28,7 +34,9 @@ export function EmployeeTrailView({
       onDateChange={onDateChange}
       topPad={topPad}
       bottomPad={bottomPad}
+      employeeId={employeeId}
+      employeeName={employeeName}
+      profilePhotoUrl={profilePhotoUrl}
     />
   );
 }
-

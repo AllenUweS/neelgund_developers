@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -12,14 +12,50 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import Colors from "@/constants/colors";
-import { formatCoordinates, openInGoogleMaps } from "@/lib/geocoding";
+import { reverseGeocode, openInGoogleMaps } from "@/lib/geocoding";
+
+/**
+ * Hook: resolves a (lat, lng) pair to a short landmark/address string.
+ * Returns null while loading, falls back to "lat, lng" if geocoding fails.
+ */
+function useNearestLandmark(lat: number, lng: number): string | null {
+  const [label, setLabel] = useState<string | null>(null);
+  const key = `${lat.toFixed(5)}_${lng.toFixed(5)}`;
+  const prevKey = useRef<string>("");
+
+  useEffect(() => {
+    if (lat === 0 && lng === 0) { setLabel(null); return; }
+    if (key === prevKey.current) return;
+    prevKey.current = key;
+    let cancelled = false;
+    setLabel(null);
+
+    reverseGeocode(lat, lng).then((result) => {
+      if (cancelled) return;
+      if (result?.address) {
+        // Show the shortest useful slice: street / area / city (max 3 parts)
+        const parts = result.address.split(",").map((p) => p.trim()).filter(Boolean);
+        const short = parts.slice(0, Math.min(3, parts.length)).join(", ");
+        setLabel(short);
+      } else {
+        setLabel(`${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+      }
+    }).catch(() => {
+      if (!cancelled) setLabel(`${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+    });
+
+    return () => { cancelled = true; };
+  }, [key, lat, lng]);
+
+  return label;
+}
 
 const C = Colors.light;
 
 let NativeDatePicker: typeof import("@react-native-community/datetimepicker").default | null = null;
 try {
   NativeDatePicker = require("@react-native-community/datetimepicker").default;
-} catch {}
+} catch { }
 
 export type EmployeeLocation = {
   employeeId: string;
@@ -72,17 +108,21 @@ function timeAgo(iso: string): string {
   return remMonths > 0 ? `${years}y ${remMonths}mo ago` : `${years}y ago`;
 }
 
+// Match web app: 5-minute threshold for "Live now"
+const LIVE_THRESHOLD_MS = 5 * 60 * 1000;
+
+function isLiveNow(employee: EmployeeLocation): boolean {
+  if (employee.trackerState === "stopped") return false;
+  const best = (employee as any).lastPingAt ?? employee.recordedAt;
+  if (!best) return false;
+  return (Date.now() - new Date(best).getTime()) <= LIVE_THRESHOLD_MS;
+}
+
 function activityTone(employee: EmployeeLocation): { label: string; color: string; bg: string; icon: React.ComponentProps<typeof Ionicons>["name"] } {
-  const mins = minutesSince(employee.recordedAt);
-  // FIX: If trackerState is explicitly "stopped" the employee is offline —
-  // show Idle even if their last ping was very recent (e.g. just logged out).
-  if (employee.trackerState === "stopped") {
-    return { label: "Idle", color: C.textSecondary, bg: C.surfaceSecondary, icon: "time-outline" };
+  if (isLiveNow(employee)) {
+    return { label: "Live", color: "#10B981", bg: "#10B98118", icon: "radio-button-on" };
   }
-  // trackerState = "running" or unknown (no row yet): use time-based heuristic
-  if (mins <= 10 && employee.trackerState === "running") return { label: "Live", color: C.success, bg: C.success + "18", icon: "radio-button-on" };
-  if (mins <= 60) return { label: "Recent", color: C.warning, bg: C.warning + "18", icon: "pulse-outline" };
-  return { label: "Idle", color: C.textSecondary, bg: C.surfaceSecondary, icon: "time-outline" };
+  return { label: "Offline", color: "#94a3b8", bg: "#94a3b815", icon: "ellipse-outline" };
 }
 
 function initials(name: string): string {
@@ -128,12 +168,8 @@ export function EmployeePickerList({
     : dateObj.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 
   const stats = useMemo(() => {
-    // FIX: Live count uses trackerState = "running" as the truth source.
-    const live = employees.filter(
-      (e) => e.trackerState === "running" && minutesSince(e.recordedAt) <= 10
-    ).length;
-    const recent = employees.filter((e) => minutesSince(e.recordedAt) <= 60).length;
-    return { live, recent, total: employees.length };
+    const live = employees.filter(isLiveNow).length;
+    return { live, total: employees.length };
   }, [employees]);
 
   const filtered = useMemo(() => {
@@ -144,7 +180,7 @@ export function EmployeePickerList({
         const matchesSearch = !q || employee.employeeName.toLowerCase().includes(q);
         const matchesActivity =
           activityFilter === "all" ||
-          (activityFilter === "fresh" && mins <= 10 && employee.trackerState !== "stopped") ||
+          (activityFilter === "fresh" && isLiveNow(employee)) ||
           (activityFilter === "hour" && mins <= 60) ||
           (activityFilter === "older" && mins > 60);
         return matchesSearch && matchesActivity;
@@ -215,7 +251,7 @@ export function EmployeePickerList({
               <View style={styles.heroTop}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.eyebrow}>TEAM TRAILS</Text>
-                  <Text style={styles.title}>Pick a rider</Text>
+                  <Text style={styles.title}>Pick an Employee</Text>
                   <Text style={styles.subtitle}>Select an employee to replay their route, stops, and trip history.</Text>
                 </View>
                 <TouchableOpacity style={styles.refreshBtn} onPress={onRefetch} activeOpacity={0.85}>
@@ -225,7 +261,6 @@ export function EmployeePickerList({
 
               <View style={styles.statRow}>
                 <StatPill label="Live" value={stats.live} color={C.success} icon="radio-button-on" />
-                <StatPill label="Recent" value={stats.recent} color={C.warning} icon="pulse-outline" />
                 <StatPill label="Total" value={stats.total} color={C.brand} icon="people-outline" />
               </View>
             </View>
@@ -351,9 +386,10 @@ function StatPill({
 
 function EmployeeCard({ employee, onSelect }: { employee: EmployeeLocation; onSelect: (id: string) => void }) {
   const tone = activityTone(employee);
-  const coords = formatCoordinates(employee.latitude, employee.longitude);
   const hasPing = employee.recordedAt && new Date(employee.recordedAt).getFullYear() >= 2000;
   const hasCoords = employee.latitude !== 0 || employee.longitude !== 0;
+  // Nearest landmark name instead of raw lat/long
+  const landmark = useNearestLandmark(employee.latitude, employee.longitude);
 
   return (
     <TouchableOpacity style={styles.card} activeOpacity={0.86} onPress={() => onSelect(employee.employeeId)}>
@@ -400,9 +436,15 @@ function EmployeeCard({ employee, onSelect }: { employee: EmployeeLocation; onSe
             activeOpacity={0.8}
           >
             <Ionicons name="navigate-circle-outline" size={15} color={C.brand} />
-            <Text style={styles.coordText} numberOfLines={1}>
-              {coords}
-            </Text>
+            {landmark ? (
+              <Text style={styles.coordText} numberOfLines={1}>
+                {landmark}
+              </Text>
+            ) : (
+              <Text style={[styles.coordText, { color: C.textSecondary, fontStyle: "italic" }]} numberOfLines={1}>
+                locating…
+              </Text>
+            )}
           </TouchableOpacity>
         ) : (
           <View style={styles.coordRow}>

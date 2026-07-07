@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -6,12 +6,15 @@ import {
   ScrollView,
   TouchableOpacity,
 } from "react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
-import { getAttendanceByDate, listUsers } from "@/lib/api";
+import { getAttendanceByDate, listUsers, getAttendanceByDateRange, adminCreateAttendance } from "@/lib/api";
 import type { AttendanceRecord, UserBasic } from "@/lib/types";
-import { formatTime, formatDate, calcDuration, todayISODate } from "@/lib/utils";
+import { formatTime, formatDate, calcDuration, todayISODate, deriveAttendanceStatus, hhmmToIso, isValidIsoDate } from "@/lib/utils";
+import { ExportAttendanceModal } from "@/components/ExportAttendanceModal";
+import { ManualAttendanceModal } from "@/components/ManualAttendanceModal";
+import * as XLSX from "xlsx";
 
 const C = {
   brand: "#1B4F8A",
@@ -55,11 +58,97 @@ export default function AttendanceWebScreen() {
 
   const isAdmin = user?.role === "admin" || user?.role === "super_admin" || user?.role === "hr" || user?.role === "manager";
 
+  const qc = useQueryClient();
   const attendanceQ = useQuery<AttendanceRecord[]>({
     queryKey: ["attendance-by-date", selectedDate],
     queryFn: () => getAttendanceByDate(selectedDate),
     staleTime: 30_000,
   });
+
+  const usersQ = useQuery<UserBasic[]>({
+    queryKey: ["users"],
+    queryFn: listUsers,
+    staleTime: 5 * 60_000,
+  });
+  const allUsers = usersQ.data ?? [];
+
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showManualModal, setShowManualModal] = useState(false);
+
+  const manualEntryMutation = useMutation({
+    mutationFn: async (data: { employeeId: string; date: string; checkInTime: string; checkOutTime: string; notes: string }) => {
+      if (!data.employeeId) throw new Error("Please select an employee");
+      if (!isValidIsoDate(data.date)) throw new Error("Date must be a valid YYYY-MM-DD");
+      const checkInISO = data.checkInTime ? hhmmToIso(data.date, data.checkInTime) : null;
+      const checkOutISO = data.checkOutTime ? hhmmToIso(data.date, data.checkOutTime) : null;
+      if (data.checkInTime && !checkInISO) throw new Error("Check-in time must be HH:MM");
+      if (data.checkOutTime && !checkOutISO) throw new Error("Check-out time must be HH:MM");
+      if (checkOutISO && !checkInISO) throw new Error("Check-in time is required when check-out is provided");
+      const computedStatus = deriveAttendanceStatus(checkInISO, checkOutISO);
+      await adminCreateAttendance({
+        employeeId: data.employeeId,
+        date: data.date,
+        checkInTime: checkInISO,
+        checkOutTime: checkOutISO,
+        status: computedStatus,
+        notes: data.notes || null,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["attendance-by-date"] });
+      setShowManualModal(false);
+      alert("Attendance record created/updated successfully.");
+    },
+    onError: (e: Error) => alert("Failed: " + e.message),
+  });
+
+  const handleExport = useCallback(async (empId: string | null, startD: string, endD: string) => {
+    try {
+      const exportData = await getAttendanceByDateRange(startD, endD);
+      let toExport = exportData;
+      if (empId) {
+        toExport = toExport.filter(r => r.employeeId === empId);
+      }
+
+      if (toExport.length === 0) {
+        alert("No attendance records found for the selected criteria.");
+        return;
+      }
+
+      const rows = toExport.map((record) => {
+        const duration = record.checkInTime && record.checkOutTime
+          ? calcDuration(record.checkInTime, record.checkOutTime)
+          : record.checkInTime ? "In progress" : "—";
+        return {
+          "Employee Name": record.employeeName ?? "Unknown",
+          "Date": record.date,
+          "Check-In": record.checkInTime ? formatTime(record.checkInTime) : "—",
+          "Check-Out": record.checkOutTime ? formatTime(record.checkOutTime) : "—",
+          "Duration": duration,
+          "Status": record.status === "present" ? "Present" : record.status === "half_day" ? "Half Day" : record.status === "absent" ? "Absent" : "Pending",
+          "Notes": record.notes ?? "",
+        };
+      });
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Attendance");
+      const wbout = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+      const blob = new Blob([wbout], { type: "application/octet-stream" });
+      
+      const fileName = `Attendance_Export_${new Date().toISOString().slice(0,10)}.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Failed to export attendance.");
+    }
+  }, []);
 
   const records: AttendanceRecord[] = attendanceQ.data ?? [];
 
@@ -104,6 +193,18 @@ export default function AttendanceWebScreen() {
               <TouchableOpacity style={styles.todayBtn} onPress={() => setSelectedDate(todayISODate())}>
                 <Text style={styles.todayBtnText}>Today</Text>
               </TouchableOpacity>
+            )}
+            {isAdmin && (
+              <>
+                <TouchableOpacity style={[styles.todayBtn, { backgroundColor: C.brand, flexDirection: "row", alignItems: "center", gap: 4 }]} onPress={() => setShowManualModal(true)}>
+                  <Ionicons name="create-outline" size={14} color="#fff" />
+                  <Text style={styles.todayBtnText}>Manual Entry</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.todayBtn, { backgroundColor: C.accent, flexDirection: "row", alignItems: "center", gap: 4 }]} onPress={() => setShowExportModal(true)}>
+                  <Ionicons name="download-outline" size={14} color="#fff" />
+                  <Text style={styles.todayBtnText}>Export</Text>
+                </TouchableOpacity>
+              </>
             )}
           </View>
         </View>
@@ -222,6 +323,19 @@ export default function AttendanceWebScreen() {
           </View>
         </ScrollView>
       </View>
+      <ExportAttendanceModal
+        visible={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        onExport={handleExport}
+        users={allUsers as any}
+      />
+      <ManualAttendanceModal
+        visible={showManualModal}
+        onClose={() => setShowManualModal(false)}
+        onSubmit={(data) => manualEntryMutation.mutate(data)}
+        isSubmitting={manualEntryMutation.isPending}
+        users={allUsers}
+      />
     </View>
   );
 }

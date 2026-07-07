@@ -289,8 +289,6 @@ export default function SuperAdminScreen() {
               <MetricCard label="Managers" value={managers} icon="briefcase" color="#8B5CF6" />
               <MetricCard label="Employees" value={employees} icon="person" color={C.success} />
               <MetricCard label="Transport" value={transport} icon="car" color="#F59E0B" />
-              <MetricCard label="Trackers Running" value={trackingRunning} icon="pulse" color={C.accent} />
-              <MetricCard label="Permission Denied" value={permissionDenied} icon="warning" color={C.danger} />
               <MetricCard label="Documents" value={docs.length} icon="folder-open" color={C.brand} />
             </View>
 
@@ -302,12 +300,7 @@ export default function SuperAdminScreen() {
                 icon="people-circle"
                 onPress={() => router.push("/(tabs)/hr")}
               />
-              <QuickAction
-                title="Open Tracking Status"
-                subtitle="Review live tracker and permission health"
-                icon="pulse"
-                onPress={() => router.push("/(tabs)/tracking-status")}
-              />
+
               <QuickAction
                 title="Open Documents"
                 subtitle="Review company files and categories"

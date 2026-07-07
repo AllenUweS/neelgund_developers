@@ -246,7 +246,7 @@ export function EmployeeTrailView({
               viewRequestKey={viewRequestKey}
               style={StyleSheet.absoluteFill}
             />
-            
+
             {trail.length === 0 && (
               <View style={styles.mapEmptyOverlay} pointerEvents="none">
                 <View style={styles.mapEmptyBox}>

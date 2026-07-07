@@ -37,6 +37,8 @@ export function MapNativeView({
       topPad={topPad}
       bottomPad={bottomPad}
       employeeName={selectedRow?.employeeName ?? "Employee"}
+      employeeId={selectedRow?.employeeId ?? null}
+      profilePhotoUrl={selectedRow?.profilePhotoUrl ?? null}
       onBack={() => onSelect(null)}
     />
   );

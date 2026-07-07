@@ -61,12 +61,28 @@ export type OsmMarker = {
   color?: OsmMarkerColor;
   label?: string;
   variant?: "dot" | "number" | "vehicle";
+  photoUrl?: string;
+};
+
+export type PlaybackMarkerData = {
+  lat: number;
+  lng: number;
+  label: string;   // employee name or initials
+  bearing?: number; // direction of travel in degrees
+  photoUrl?: string | null; // profile photo URL — shown instead of car icon
+};
+
+export type LiveTrail = {
+  id: string;
+  color?: string;
+  path: LatLng[];
 };
 
 export type OsmWebMapProps = {
   center?: LatLng | null;
   zoom?: number;
   markers?: OsmMarker[];
+  playbackMarker?: PlaybackMarkerData | null;  // dedicated smooth replay marker
   polyline?: LatLng[];
   routePolyline?: LatLng[];
   traveledPolyline?: LatLng[];
@@ -77,6 +93,7 @@ export type OsmWebMapProps = {
   tileMode?: OsmTileMode;
   onMarkerPress?: (id: string) => void;
   style?: StyleProp<ViewStyle>;
+  liveTrails?: LiveTrail[];  // per-employee live trail polylines for fleet map
 };
 
 export const DEFAULT_CENTER: LatLng = { lat: 15.3647, lng: 75.124 };
@@ -106,6 +123,16 @@ function buildHTML(apiKey: string): string {
   .pin-dot{width:26px;height:26px;border-radius:13px;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);cursor:pointer;display:flex;align-items:center;justify-content:center;font:700 12px system-ui,sans-serif;color:#fff;}
   .pin-number{width:34px;height:34px;border-radius:17px;background:#F4A820;color:#fff;display:flex;align-items:center;justify-content:center;font:700 16px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.3);border:2px solid rgba(255,255,255,.9);cursor:pointer;}
   .pin-vehicle{width:30px;height:30px;border-radius:15px;background:#0B3A57;color:#fff;display:flex;align-items:center;justify-content:center;font:700 14px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid #fff;cursor:pointer;}
+  .pin-photo{width:38px;height:38px;border-radius:19px;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;overflow:hidden;}
+  /* Replay marker */
+  .replay-marker-wrap{position:absolute;transform:translate(-50%,-50%);pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:3px;}
+  .replay-marker-icon{width:44px;height:44px;border-radius:50%;background:#1E4E8A;border:3px solid #fff;box-shadow:0 3px 12px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;position:relative;}
+  .replay-marker-icon::after{content:'';position:absolute;inset:0;border-radius:50%;background:#1E4E8A;opacity:0.35;animation:rmpulse 1.6s ease-out infinite;}
+  .replay-marker-icon.has-photo::after{background:transparent;}
+  .replay-marker-arrow{font-size:22px;color:#fff;line-height:1;display:block;transform-origin:center;}
+  .replay-marker-photo{width:44px;height:44px;border-radius:50%;object-fit:cover;display:block;}
+  .replay-marker-label{background:rgba(15,35,70,0.88);color:#fff;font:600 11px system-ui,sans-serif;padding:2px 7px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);}
+  @keyframes rmpulse{0%{transform:scale(1);opacity:0.35;}70%{transform:scale(2.2);opacity:0;}100%{transform:scale(2.2);opacity:0;}}
 </style>
 </head>
 <body>
@@ -127,12 +154,40 @@ function buildHTML(apiKey: string): string {
   var map,
       infoWindow,
       markers=[],
+      liveTrails={},
       polyline=null,
       routePoly=null,
       traveledPoly=null,
-      remainingPoly=null;
+      remainingPoly=null,
+      replayOverlay=null,
+      replayEl=null;
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+  function loadPhotoIcon(url, cb) {
+    var img = new Image();
+    img.crossOrigin = 'Anonymous';
+    img.onload = function() {
+      var canvas = document.createElement('canvas');
+      canvas.width = 44; canvas.height = 44;
+      var ctx = canvas.getContext('2d');
+      ctx.beginPath(); ctx.arc(22, 22, 21, 0, Math.PI*2);
+      ctx.fillStyle = 'white'; ctx.fill();
+      ctx.save(); ctx.clip();
+      
+      var w = img.width, h = img.height;
+      var s = Math.min(w, h);
+      var sx = (w - s) / 2, sy = (h - s) / 2;
+      ctx.drawImage(img, sx, sy, s, s, 4, 4, 36, 36);
+      
+      ctx.restore();
+      ctx.beginPath(); ctx.arc(22, 22, 21, 0, Math.PI*2);
+      ctx.lineWidth = 3; ctx.strokeStyle = 'white'; ctx.stroke();
+      cb(canvas.toDataURL());
+    };
+    img.onerror = function() { cb(null); };
+    img.src = url;
+  }
+
   function latLngs(coords){
     return (coords||[])
       .filter(function(c){return isFinite(c.lat)&&isFinite(c.lng);})
@@ -153,7 +208,12 @@ function buildHTML(apiKey: string): string {
 
   function pinEl(m){
     var div=document.createElement('div');
-    if(m.variant==='number'){
+    if(m.photoUrl){
+      div.className='pin-photo';
+      div.style.backgroundImage='url('+m.photoUrl+')';
+      div.style.backgroundSize='cover';
+      div.style.backgroundPosition='center';
+    }else if(m.variant==='number'){
       div.className='pin-number';
       div.textContent=m.label!=null?String(m.label):'';
     }else if(m.variant==='vehicle'){
@@ -166,6 +226,44 @@ function buildHTML(apiKey: string): string {
       div.textContent=m.label!=null?String(m.label):'';
     }
     return div;
+  }
+
+  // ── makeNativeIcon: creates a Google Maps icon descriptor from marker data ──
+  // Uses a data-URI SVG so we get crisp custom shapes without extra HTTP requests.
+  function makeNativeIcon(m){
+    var size,anchor,url;
+    if(m.variant==='number'){
+      var color=COLORS[m.color]||'#F4A820';
+      var label=m.label!=null?String(m.label):'';
+      var svg='<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34">'+
+        '<circle cx="17" cy="17" r="16" fill="'+color+'" stroke="rgba(255,255,255,0.9)" stroke-width="2"/>'+
+        '<text x="17" y="22" text-anchor="middle" font-family="system-ui,sans-serif" font-weight="700" font-size="14" fill="white">'+label+'</text>'+
+        '</svg>';
+      url='data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(svg);
+      size=new google.maps.Size(34,34);
+      anchor=new google.maps.Point(17,17);
+    }else if(m.variant==='vehicle'){
+      var color=COLORS[m.color]||'#0B3A57';
+      var label=m.label||'▶';
+      var svg='<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30">'+
+        '<circle cx="15" cy="15" r="14" fill="'+color+'" stroke="white" stroke-width="2"/>'+
+        '<text x="15" y="20" text-anchor="middle" font-family="system-ui,sans-serif" font-weight="700" font-size="12" fill="white">'+label+'</text>'+
+        '</svg>';
+      url='data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(svg);
+      size=new google.maps.Size(30,30);
+      anchor=new google.maps.Point(15,15);
+    }else{
+      var color=COLORS[m.color]||'#1E4E8A';
+      var label=m.label!=null?String(m.label):'';
+      var svg='<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26">'+
+        '<circle cx="13" cy="13" r="12" fill="'+color+'" stroke="white" stroke-width="3"/>'+
+        '<text x="13" y="18" text-anchor="middle" font-family="system-ui,sans-serif" font-weight="700" font-size="11" fill="white">'+label+'</text>'+
+        '</svg>';
+      url='data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(svg);
+      size=new google.maps.Size(26,26);
+      anchor=new google.maps.Point(13,13);
+    }
+    return{url:url,scaledSize:size,anchor:anchor};
   }
 
   // ── Boot (called by Maps callback) ────────────────────────────────────────
@@ -181,13 +279,157 @@ function buildHTML(apiKey: string): string {
 
     // ── Public API called from React Native via injectJavaScript ──────────
     window.__gm={
-      setView:function(lat,lng,zoom){
+      setView:function(lat,lng,zoom,applyZoom){
         if(!isFinite(lat)||!isFinite(lng))return;
         map.panTo({lat:lat,lng:lng});
-        if(isFinite(zoom))map.setZoom(zoom);
+        // Only apply zoom when explicitly requested (e.g. user tapped +/- or jumped to location).
+        // During playback follow-pans, applyZoom is false so pinch-zoom is never overridden.
+        if(applyZoom&&isFinite(zoom))map.setZoom(zoom);
+      },
+      updatePlaybackMarker:function(data){
+        // data = {lat, lng, label, bearing, photoUrl} or null to hide
+        if(!data){
+          if(replayOverlay){replayOverlay.setMap(null);replayOverlay=null;replayEl=null;}
+          return;
+        }
+        if(!replayEl){
+          replayEl=document.createElement('div');
+          replayEl.className='replay-marker-wrap';
+          replayEl.innerHTML=
+            '<div class="replay-marker-icon">'+
+              '<span class="replay-marker-arrow">&#x1F464;</span>'+
+            '</div>'+
+            '<div class="replay-marker-label"></div>';
+        }
+        // Show profile photo or person icon
+        var iconDiv=replayEl.querySelector('.replay-marker-icon');
+        var labelEl=replayEl.querySelector('.replay-marker-label');
+        if(data.photoUrl){
+          if(iconDiv){
+            iconDiv.className='replay-marker-icon has-photo';
+            iconDiv.style.background='transparent';
+            var existingImg=iconDiv.querySelector('img.replay-marker-photo');
+            if(!existingImg||existingImg.src!==data.photoUrl){
+              iconDiv.innerHTML='';
+              var img=document.createElement('img');
+              img.className='replay-marker-photo';
+              img.src=data.photoUrl;
+              img.onerror=function(){
+                iconDiv.innerHTML='<span class="replay-marker-arrow">&#x1F464;</span>';
+                iconDiv.className='replay-marker-icon';
+                iconDiv.style.background='#1E4E8A';
+              };
+              iconDiv.appendChild(img);
+            }
+          }
+        }else{
+          if(iconDiv&&!iconDiv.querySelector('.replay-marker-arrow')){
+            iconDiv.className='replay-marker-icon';
+            iconDiv.style.background='#1E4E8A';
+            iconDiv.innerHTML='<span class="replay-marker-arrow">&#x1F464;</span>';
+          }
+          // Do not rotate the person icon as it would look strange upside down
+        }
+        if(labelEl)labelEl.textContent=data.label||'';
+        if(!replayOverlay){
+          replayOverlay=new google.maps.OverlayView();
+          replayOverlay.onAdd=function(){
+            this.getPanes().overlayMouseTarget.appendChild(replayEl);
+          };
+          replayOverlay.draw=function(){
+            var proj=this.getProjection();
+            if(!proj||!replayOverlay._pos)return;
+            var px=proj.fromLatLngToDivPixel(replayOverlay._pos);
+            if(!px)return;
+            replayEl.style.position='absolute';
+            replayEl.style.left=px.x+'px';
+            replayEl.style.top=px.y+'px';
+          };
+          replayOverlay.onRemove=function(){
+            if(replayEl&&replayEl.parentNode)replayEl.parentNode.removeChild(replayEl);
+          };
+          replayOverlay.setMap(map);
+        }
+        replayOverlay._pos=new google.maps.LatLng(data.lat,data.lng);
+        replayOverlay.draw();
       },
       setTileMode:function(mode){
         map.setMapTypeId(mode==='satellite'?'hybrid':'roadmap');
+      },
+      smoothUpdateMarkers:function(list){
+        // Use native google.maps.Marker so markers are properly geo-anchored.
+        // OverlayView CSS-positioned divs drift on pan/zoom — native Markers never do.
+        var newIds=(list||[])
+          .filter(function(m){return isFinite(m.lat)&&isFinite(m.lng);})
+          .map(function(m){return String(m.id);});
+        // Remove markers no longer in list
+        markers=markers.filter(function(mk){
+          if(newIds.indexOf(String(mk._markerId))===-1){mk.setMap(null);return false;}
+          return true;
+        });
+        // Update or add
+        (list||[]).forEach(function(m){
+          if(!isFinite(m.lat)||!isFinite(m.lng))return;
+          var existing=null;
+          for(var i=0;i<markers.length;i++){
+            if(String(markers[i]._markerId)===String(m.id)){existing=markers[i];break;}
+          }
+          if(existing){
+            existing.setPosition({lat:m.lat,lng:m.lng});
+            if(m.photoUrl&&existing._photoUrl!==m.photoUrl){
+              existing._photoUrl=m.photoUrl;
+              existing.setIcon(makeNativeIcon(m)); // fallback first
+              loadPhotoIcon(m.photoUrl, function(url) {
+                if (url && existing._photoUrl === m.photoUrl) {
+                  existing.setIcon({ url: url, scaledSize: new google.maps.Size(44, 44), anchor: new google.maps.Point(22, 22) });
+                }
+              });
+            }
+            return;
+          }
+          var mk=new google.maps.Marker({
+            position:{lat:m.lat,lng:m.lng},
+            map:map,
+            title:m.title||'',
+            icon:makeNativeIcon(m),
+            optimized:false,
+          });
+          mk._markerId=m.id;
+          mk._photoUrl=m.photoUrl||null;
+          if (m.photoUrl) {
+            loadPhotoIcon(m.photoUrl, function(url) {
+              if (url && mk._photoUrl === m.photoUrl) {
+                mk.setIcon({ url: url, scaledSize: new google.maps.Size(44, 44), anchor: new google.maps.Point(22, 22) });
+              }
+            });
+          }
+          (function(id){
+            mk.addListener('click',function(){post({type:'marker',id:String(id)});});
+          })(m.id);
+          markers.push(mk);
+        });
+      },
+      updateLiveTrails:function(trails){
+        // trails = [{id, color, path:[{lat,lng},...]}]
+        // Grow per-employee trail polylines in real time.
+        var keepIds=(trails||[]).map(function(t){return String(t.id);});
+        Object.keys(liveTrails).forEach(function(id){
+          if(keepIds.indexOf(id)===-1){liveTrails[id].setMap(null);delete liveTrails[id];}
+        });
+        (trails||[]).forEach(function(t){
+          if(!t.path||t.path.length<2)return;
+          var pts=t.path.filter(function(p){return isFinite(p.lat)&&isFinite(p.lng);});
+          if(pts.length<2)return;
+          if(liveTrails[String(t.id)]){
+            liveTrails[String(t.id)].setPath(pts);
+          }else{
+            liveTrails[String(t.id)]=new google.maps.Polyline({
+              path:pts,map:map,
+              strokeColor:'#1E4E8A',
+              strokeWeight:4,strokeOpacity:0.75,geodesic:true,
+            });
+          }
+        });
       },
       setMarkers:function(list){
         markers.forEach(function(m){m.setMap(null);});
@@ -196,6 +438,10 @@ function buildHTML(apiKey: string): string {
           if(!isFinite(m.lat)||!isFinite(m.lng))return;
           var el=pinEl(m);
           var ov=new google.maps.OverlayView();
+          ov._markerId=m.id;
+          ov._markerLat=m.lat;
+          ov._markerLng=m.lng;
+          ov._elem=el;
           (function(elem,data){
             ov.onAdd=function(){
               var pane=this.getPanes().overlayMouseTarget;
@@ -204,10 +450,9 @@ function buildHTML(apiKey: string): string {
             ov.draw=function(){
               var proj=this.getProjection();
               if(!proj)return;
-              var pos=proj.fromLatLngToDivPixel(new google.maps.LatLng(data.lat,data.lng));
+              var pos=proj.fromLatLngToDivPixel(new google.maps.LatLng(this._markerLat||data.lat,this._markerLng||data.lng));
               if(!pos)return;
-              // Use fixed sizes so offsetWidth/Height are not needed before layout
-              var w=parseInt(elem.className==='pin-number'?'34':(elem.className==='pin-vehicle'?'30':'26'),10);
+              var w=parseInt(elem.className==='pin-number'?'34':(elem.className==='pin-vehicle'?'30':(elem.className==='pin-photo'?'38':'26')),10);
               var h=w;
               elem.style.position='absolute';
               elem.style.left=(pos.x-(w/2))+'px';
@@ -224,23 +469,29 @@ function buildHTML(apiKey: string): string {
       },
       setPolyline:function(coords){
         polyline=clearPolyline(polyline);
-        routePoly=clearPolyline(routePoly);
+        // Only clear traveled/remaining when resetting to raw GPS path (no route snapping)
         traveledPoly=clearPolyline(traveledPoly);
         remainingPoly=clearPolyline(remainingPoly);
         polyline=makePoly(coords,{strokeColor:'#2563EB',strokeWeight:5,strokeOpacity:0.85});
       },
       setRoutePolyline:function(coords){
+        // Replace raw GPS polyline with snapped route; keep traveled/remaining overlays intact
         polyline=clearPolyline(polyline);
         routePoly=clearPolyline(routePoly);
+        if(!coords||coords.length<2)return;
         routePoly=makePoly(coords,{strokeColor:'#0B3A57',strokeWeight:6,strokeOpacity:1});
       },
       setTraveledPolyline:function(coords){
+        // Overlaid on top of route — do NOT clear polyline or routePoly
         traveledPoly=clearPolyline(traveledPoly);
-        traveledPoly=makePoly(coords,{strokeColor:'#10B981',strokeWeight:6,strokeOpacity:1});
+        if(!coords||coords.length<2)return;
+        traveledPoly=makePoly(coords,{strokeColor:'#10B981',strokeWeight:7,strokeOpacity:1,zIndex:5});
       },
       setRemainingPolyline:function(coords){
+        // Overlaid on top of route — do NOT clear polyline or routePoly
         remainingPoly=clearPolyline(remainingPoly);
-        remainingPoly=makePoly(coords,{strokeColor:'#9CA3AF',strokeWeight:4,strokeOpacity:0.6});
+        if(!coords||coords.length<2)return;
+        remainingPoly=makePoly(coords,{strokeColor:'#9CA3AF',strokeWeight:4,strokeOpacity:0.6,zIndex:4});
       },
       fitTo:function(coords){
         var pts=latLngs(coords);
@@ -273,6 +524,7 @@ export function GoogleMapsWebMap({
   center,
   zoom,
   markers,
+  playbackMarker,
   polyline,
   routePolyline,
   traveledPolyline,
@@ -283,6 +535,7 @@ export function GoogleMapsWebMap({
   tileMode,
   onMarkerPress,
   style,
+  liveTrails,
 }: OsmWebMapProps) {
   const webRef = useRef<WebView>(null);
   const readyRef = useRef(false);
@@ -297,6 +550,9 @@ export function GoogleMapsWebMap({
   const lastRemainingPolylineKeyRef = useRef<string | null>(null);
   const lastTileModeRef = useRef<OsmTileMode | null>(null);
   const lastViewKeyRef = useRef<string | null>(null);
+  const lastZoomViewKeyRef = useRef<string | null>(null);
+  const lastPlaybackMarkerKeyRef = useRef<string | null>(null);
+  const lastLiveTrailsKeyRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [errored, setErrored] = useState(false);
 
@@ -337,15 +593,24 @@ export function GoogleMapsWebMap({
     const markersKey = safeMarkers
       .map(
         (m) =>
-          `${m.id}:${m.lat.toFixed(6)}:${m.lng.toFixed(6)}:${m.label ?? ""}:${m.variant ?? ""}:${m.color ?? ""}`
+          `${m.id}:${m.lat.toFixed(6)}:${m.lng.toFixed(6)}:${m.label ?? ""}:${m.variant ?? ""}:${m.color ?? ""}:${m.photoUrl ?? ""}`
       )
+      .join("|");
+
+    const safeLiveTrails = (liveTrails || []).map((t) => ({
+      id: t.id,
+      color: t.color,
+      path: t.path.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng)),
+    })).filter((t) => t.path.length >= 2);
+    const liveTrailsKey = safeLiveTrails
+      .map((t) => `${t.id}:${t.path.length}:${t.path[t.path.length - 1]?.lat?.toFixed(5)}`)
       .join("|");
 
     return {
       center:
         center &&
-        Number.isFinite(center.lat) &&
-        Number.isFinite(center.lng)
+          Number.isFinite(center.lat) &&
+          Number.isFinite(center.lng)
           ? center
           : null,
       zoom: typeof zoom === "number" && Number.isFinite(zoom) ? zoom : null,
@@ -364,10 +629,12 @@ export function GoogleMapsWebMap({
       viewRequestKey: viewRequestKey ?? 0,
       tileMode: (tileMode === "satellite" ? "satellite" : "map") as OsmTileMode,
       fitIdentity: routeKey !== "empty" ? routeKey : polyKey,
+      liveTrails: safeLiveTrails,
+      liveTrailsKey,
     };
   }, [
     center, zoom, markers, polyline, routePolyline,
-    traveledPolyline, remainingPolyline, fitToPolyline, fitRequestKey, viewRequestKey, tileMode,
+    traveledPolyline, remainingPolyline, fitToPolyline, fitRequestKey, viewRequestKey, tileMode, liveTrails,
   ]);
 
   const applyState = useCallback(() => {
@@ -379,7 +646,7 @@ export function GoogleMapsWebMap({
       payload.fitToPolyline &&
       hasPolyline &&
       lastFitKeyRef.current !==
-        `${payload.fitRequestKey}:${payload.fitIdentity}`;
+      `${payload.fitRequestKey}:${payload.fitIdentity}`;
 
     const shouldTile = lastTileModeRef.current !== payload.tileMode;
     const shouldMarkers = lastMarkersKeyRef.current !== payload.markersKey;
@@ -390,39 +657,51 @@ export function GoogleMapsWebMap({
       lastTraveledPolylineKeyRef.current !== payload.traveledPolylineKey;
     const shouldRemaining =
       lastRemainingPolylineKeyRef.current !== payload.remainingPolylineKey;
-    const viewKey = payload.center
-      ? `${payload.center.lat.toFixed(6)}:${payload.center.lng.toFixed(6)}:${payload.zoom ?? DEFAULT_ZOOM}:${payload.viewRequestKey}`
+    // positionKey: changes when center moves (playback panning) — does NOT include zoom
+    // so that user pinch-zoom is never clobbered by a pan-only update.
+    const positionKey = payload.center
+      ? `${payload.center.lat.toFixed(6)}:${payload.center.lng.toFixed(6)}:${payload.viewRequestKey}`
       : null;
+    // zoomViewKey: changes only when the caller explicitly requests a zoom change
+    // (viewRequestKey bumped by +/- buttons, jump-to-location, etc.)
+    const zoomViewKey = `${payload.zoom ?? DEFAULT_ZOOM}:${payload.viewRequestKey}`;
     const shouldView =
-      !shouldFit && !!payload.center && lastViewKeyRef.current !== viewKey;
+      !shouldFit && !!payload.center && lastViewKeyRef.current !== positionKey;
+    const shouldApplyZoom = lastZoomViewKeyRef.current !== zoomViewKey;
 
     const fitCoords =
       payload.routePolyline.length >= 2
         ? payload.routePolyline
         : payload.polyline;
 
+    const shouldLiveTrails = lastLiveTrailsKeyRef.current !== payload.liveTrailsKey;
+
     const js = `
 try {
   if (window.__gm) {
     ${shouldTile ? `window.__gm.setTileMode(${JSON.stringify(payload.tileMode)});` : ""}
-    ${shouldMarkers ? `window.__gm.setMarkers(${JSON.stringify(payload.markers)});` : ""}
+    ${shouldMarkers ? `window.__gm.smoothUpdateMarkers(${JSON.stringify(payload.markers)});` : ""}
+    ${shouldLiveTrails ? `window.__gm.updateLiveTrails(${JSON.stringify(payload.liveTrails)});` : ""}
     ${shouldRoute ? `window.__gm.setRoutePolyline(${JSON.stringify(payload.routePolyline)});` : ""}
     ${
+      // Show raw GPS polyline only when no road-snapped route AND not in replay mode
       shouldPoly &&
-      payload.routePolyline.length < 2 &&
-      payload.traveledPolyline.length < 2
+        payload.routePolyline.length < 2 &&
+        payload.traveledPolyline.length < 2
         ? `window.__gm.setPolyline(${JSON.stringify(payload.polyline)});`
-        : ""
-    }
-    ${shouldTraveled ? `window.__gm.setTraveledPolyline(${JSON.stringify(payload.traveledPolyline)});` : ""}
+        : // When replay ends (traveledPolyline goes empty), clear traveled/remaining and re-show route
+        shouldTraveled && payload.traveledPolyline.length < 2
+          ? `window.__gm.setTraveledPolyline([]);window.__gm.setRemainingPolyline([]);`
+          : ""
+      }
+    ${shouldTraveled && payload.traveledPolyline.length >= 2 ? `window.__gm.setTraveledPolyline(${JSON.stringify(payload.traveledPolyline)});` : ""}
     ${shouldRemaining ? `window.__gm.setRemainingPolyline(${JSON.stringify(payload.remainingPolyline)});` : ""}
-    ${
-      shouldFit
+    ${shouldFit
         ? `window.__gm.fitTo(${JSON.stringify(fitCoords)});`
         : shouldView && payload.center
-        ? `window.__gm.setView(${payload.center.lat},${payload.center.lng},${payload.zoom ?? DEFAULT_ZOOM});`
-        : ""
-    }
+          ? `window.__gm.setView(${payload.center.lat},${payload.center.lng},${payload.zoom ?? DEFAULT_ZOOM},${shouldApplyZoom});`
+          : ""
+      }
   }
 } catch(e) {}
 true;
@@ -444,7 +723,9 @@ true;
         lastTraveledPolylineKeyRef.current = payload.traveledPolylineKey;
       if (shouldRemaining)
         lastRemainingPolylineKeyRef.current = payload.remainingPolylineKey;
-      if (shouldView && viewKey) lastViewKeyRef.current = viewKey;
+      if (shouldView && positionKey) lastViewKeyRef.current = positionKey;
+      if (shouldApplyZoom) lastZoomViewKeyRef.current = zoomViewKey;
+      if (shouldLiveTrails) lastLiveTrailsKeyRef.current = payload.liveTrailsKey;
     } catch {
       // ignore; next render will retry
     }
@@ -453,6 +734,23 @@ true;
   useEffect(() => {
     applyState();
   }, [applyState]);
+
+  // ── Dedicated playback marker injection (runs independently of applyState) ──
+  // This runs on every render so the marker position stays in sync with interpPos
+  // without going through the full applyState payload/key machinery.
+  useEffect(() => {
+    if (!readyRef.current || !webRef.current) return;
+    const pm = playbackMarker;
+    const key = pm
+      ? `${pm.lat.toFixed(6)}:${pm.lng.toFixed(6)}:${(pm.bearing ?? 0).toFixed(1)}:${pm.label}`
+      : "null";
+    if (lastPlaybackMarkerKeyRef.current === key) return;
+    lastPlaybackMarkerKeyRef.current = key;
+    const js = pm
+      ? `try{if(window.__gm)window.__gm.updatePlaybackMarker(${JSON.stringify(pm)});}catch(e){}true;`
+      : `try{if(window.__gm)window.__gm.updatePlaybackMarker(null);}catch(e){}true;`;
+    try { webRef.current.injectJavaScript(js); } catch { /* retry next render */ }
+  });
 
   const handleMessage = useCallback(
     (e: WebViewMessageEvent) => {
@@ -470,6 +768,7 @@ true;
           lastRemainingPolylineKeyRef.current = null;
           lastTileModeRef.current = null;
           lastViewKeyRef.current = null;
+          lastLiveTrailsKeyRef.current = null;
           applyState();
         } else if (msg?.type === "marker" && msg.id) {
           onMarkerPress?.(String(msg.id));

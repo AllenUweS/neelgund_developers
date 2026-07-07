@@ -73,7 +73,8 @@ export default function MapScreen() {
   const isAdminOrManager =
     user?.role === "admin" ||
     user?.role === "super_admin" ||
-    user?.role === "manager";
+    user?.role === "manager" ||
+    user?.role === "hr";
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>(todayLocal);
   const [searchQuery, setSearchQuery] = useState("");
@@ -220,7 +221,8 @@ export default function MapScreen() {
     lng: emp.longitude,
     title: emp.employeeName,
     color: emp.employeeId === selectedEmployee ? "orange" : "blue",
-    label: emp.employeeName.charAt(0).toUpperCase(),
+    label: emp.profilePhotoUrl ? undefined : emp.employeeName.charAt(0).toUpperCase(),
+    photoUrl: emp.profilePhotoUrl ?? undefined,
   }));
 
   // FIX #1 & #2: Only pass trail polyline when an employee is selected AND
@@ -266,6 +268,7 @@ export default function MapScreen() {
           onDateChange={setSelectedDate}
           topPad={topPad}
           bottomPad={bottomPad}
+          profilePhotoUrl={user?.profilePhotoUrl ?? null}
         />
       </View>
     );

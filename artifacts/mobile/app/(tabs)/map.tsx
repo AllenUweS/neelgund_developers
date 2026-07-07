@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { View, StyleSheet, Text, TouchableOpacity } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { MapNativeView } from "@/components/MapNativeView";
 import { EmployeeTrailView } from "@/components/EmployeeTrailView";
 import { AdminFleetMap } from "@/components/AdminFleetMap";
@@ -9,10 +10,60 @@ import { EmployeePickerList } from "@/components/EmployeePickerList";
 import { theme } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { listEmployeeLocationsByDate, getLocationTrail } from "@/lib/api";
+import { matchTrail } from "@/lib/googleRoadsMatching";
 import type { EmployeeLocation, LocationPoint } from "@/lib/types";
 import { localDateStr } from "@/lib/utils";
+import NotificationBell from "@/components/NotificationBell";
 
 const C = theme.light.colors;
+
+// ─── Persistence keys ──────────────────────────────────────────────────────
+// FIX (Bug 2 – lines disappear after re-login/restart):
+// selectedDate and the road-matched polyline are pure React state, so they reset
+// to defaults every time MapScreen mounts (i.e. after every login). We persist
+// them in AsyncStorage so the last-used date and the last-drawn trail survive
+// across logouts, app kills, and reboots. On mount we restore them so the map
+// immediately shows the path the user was looking at before, with no extra tap.
+const MAP_DATE_KEY = "neelgund:map:selectedDate";
+const MAP_MATCHED_ROUTE_PREFIX = "neelgund:map:matchedRoute:";
+
+function matchedRouteKey(empId: string, date: string): string {
+  return `${MAP_MATCHED_ROUTE_PREFIX}${empId}:${date}`;
+}
+
+async function loadPersistedDate(): Promise<string> {
+  try {
+    const stored = await AsyncStorage.getItem(MAP_DATE_KEY);
+    if (stored) return stored;
+  } catch { /* ignore */ }
+  return localDateStr(new Date());
+}
+
+async function savePersistedDate(date: string): Promise<void> {
+  try { await AsyncStorage.setItem(MAP_DATE_KEY, date); } catch { /* ignore */ }
+}
+
+async function loadPersistedMatchedRoute(empId: string, date: string): Promise<number[][] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(matchedRouteKey(empId, date));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.length >= 2) return parsed as number[][];
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function savePersistedMatchedRoute(empId: string, date: string, route: number[][] | null): Promise<void> {
+  try {
+    const key = matchedRouteKey(empId, date);
+    if (route && route.length >= 2) {
+      await AsyncStorage.setItem(key, JSON.stringify(route));
+    } else {
+      await AsyncStorage.removeItem(key);
+    }
+  } catch { /* ignore */ }
+}
+// ───────────────────────────────────────────────────────────────────────────
 
 function todayStr(): string {
   return localDateStr(new Date());
@@ -21,23 +72,62 @@ function todayStr(): string {
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const isAdminOrManager = user?.role === "admin" || user?.role === "super_admin" || user?.role === "manager";
+  const isAdminOrManager = user?.role === "admin" || user?.role === "super_admin" || user?.role === "manager" || user?.role === "hr";
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  // FIX (Bug 2): Initialise to today, then restore from AsyncStorage on mount.
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr());
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
+
+  // FIX (Bug 2): Restore persisted date on mount so after re-login the user
+  // immediately sees the same date (and therefore the same trail) they had before.
+  useEffect(() => {
+    loadPersistedDate().then((date) => {
+      // Don't reach into the future — clamp to today
+      const today = todayStr();
+      setSelectedDate(date <= today ? date : today);
+    });
+  }, []);
+
+  // Persist whenever the user changes the date
+  const handleDateChange = (date: string) => {
+    setSelectedDate(date);
+    void savePersistedDate(date);
+  };
+
+  // Road-matched route — computed client-side from the GPS trail
+  const [matchedRoute, setMatchedRoute] = useState<number[][] | null>(null);
+  const matchKeyRef = useRef<string>("");
+
+  // Must be declared before the useEffects that reference it
+  const effectiveEmployeeId = isAdminOrManager ? selectedEmployee : (user?.id ?? null);
+  const isToday = selectedDate === todayStr();
+
+  // FIX (Bug 2): On mount, restore the last persisted matchedRoute for the
+  // current employee+date so the polyline is visible immediately after re-login
+  // without waiting for the trail fetch + road-matching round-trip.
+  useEffect(() => {
+    const empId = effectiveEmployeeId;
+    if (!empId) return;
+    loadPersistedMatchedRoute(empId, selectedDate).then((cached) => {
+      if (cached) {
+        setMatchedRoute(cached);
+        // Also prime matchKeyRef so we don't redundantly re-match the same
+        // trail length we already have cached (trail.length unknown here, so
+        // use a sentinel that the real effect will overwrite once data loads).
+        matchKeyRef.current = `${empId}:${selectedDate}:cached`;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveEmployeeId, selectedDate]);
 
   const employeesQ = useQuery<EmployeeLocation[]>({
     queryKey: ["location-employees-date", selectedDate],
     queryFn: async () => (await listEmployeeLocationsByDate(selectedDate)) as EmployeeLocation[],
-    // FIX: Reduced from 60s to 15s so admin fleet map updates near-live.
-    refetchInterval: selectedDate === todayStr() ? 15_000 : false,
+    refetchInterval: selectedDate === todayStr() ? 5_000 : false,
+    refetchOnWindowFocus: true,
     enabled: isAdminOrManager,
-    staleTime: 15_000,
+    staleTime: 5_000,
   });
-
-  const effectiveEmployeeId = isAdminOrManager ? selectedEmployee : (user?.id ?? null);
-
-  const isToday = selectedDate === todayStr();
 
   const trailQ = useQuery<LocationPoint[]>({
     queryKey: ["location-trail", effectiveEmployeeId, selectedDate],
@@ -46,15 +136,43 @@ export default function MapScreen() {
       return await getLocationTrail(effectiveEmployeeId, selectedDate);
     },
     enabled: isAdminOrManager ? !!selectedEmployee : !!user?.id,
-    // FIX: Refresh live trail every 30 s for today so employees and admins
-    // see location updates without having to manually reload.
-    refetchInterval: isToday ? 30_000 : false,
-    staleTime: isToday ? 30_000 : Infinity,
+    refetchInterval: isToday ? 15_000 : false,   // reduced from 30s to 15s
+    refetchOnWindowFocus: true,                    // immediate refetch on foreground
+    staleTime: isToday ? 15_000 : Infinity,
   });
 
-  const employees = employeesQ.data ?? [];
   const trail = trailQ.data ?? [];
-  const matchedRoute = null;
+
+  // BUG FIX: Run road matching whenever the trail or employee/date changes.
+  // Previously matchedRoute was hardcoded to null — snapped paths were never used.
+  // FIX (Bug 2): After computing the matched route, persist it to AsyncStorage
+  // so the polyline is immediately available the next time the screen mounts
+  // (e.g. after logout → login) without a fresh API round-trip.
+  useEffect(() => {
+    const empId = effectiveEmployeeId;
+    if (!empId || trail.length < 2) {
+      setMatchedRoute(null);
+      return;
+    }
+    const matchKey = `${empId}:${selectedDate}:${trail.length}`;
+    if (matchKey === matchKeyRef.current) return; // already matching/matched this set
+    matchKeyRef.current = matchKey;
+    let cancelled = false;
+    matchTrail(trail, empId, selectedDate).then((result) => {
+      if (cancelled) return;
+      if (result?.coordinates && result.coordinates.length >= 2) {
+        setMatchedRoute(result.coordinates);
+        // Persist so next login restores this instantly
+        void savePersistedMatchedRoute(empId, selectedDate, result.coordinates);
+      } else {
+        setMatchedRoute(null);
+        void savePersistedMatchedRoute(empId, selectedDate, null);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [trail, effectiveEmployeeId, selectedDate]);
+
+  const employees = employeesQ.data ?? [];
   const topPad = insets.top + 8;
   const bottomPad = insets.bottom + 90;
 
@@ -77,9 +195,12 @@ export default function MapScreen() {
         matchedRoute={matchedRoute}
         isLoading={trailQ.isLoading}
         selectedDate={selectedDate}
-        onDateChange={setSelectedDate}
+        onDateChange={handleDateChange}
         topPad={topPad}
         bottomPad={bottomPad}
+        employeeId={user?.id}
+        employeeName={user?.name ?? null}
+        profilePhotoUrl={user?.profilePhotoUrl ?? null}
       />
     );
   }
@@ -96,7 +217,7 @@ export default function MapScreen() {
             onRefetch={() => employeesQ.refetch()}
             onSelect={setSelectedEmployee}
             selectedDate={selectedDate}
-            onDateChange={setSelectedDate}
+            onDateChange={handleDateChange}
             topPad={topPad + 56}
             bottomPad={bottomPad}
           />
@@ -106,6 +227,8 @@ export default function MapScreen() {
             onSelect={setSelectedEmployee}
             topPad={topPad + 56}
             bottomPad={bottomPad}
+            selectedDate={selectedDate}
+            onDateChange={handleDateChange}
           />
         )}
         <View style={[styles.viewToggleContainer, { top: topPad }]}>
@@ -123,6 +246,24 @@ export default function MapScreen() {
               <Text style={[styles.toggleText, viewMode === "list" && styles.toggleTextActive]}>List</Text>
             </TouchableOpacity>
           </View>
+        </View>
+        <View style={{
+          position: "absolute",
+          top: topPad,
+          right: 16,
+          zIndex: 50,
+          backgroundColor: C.card,
+          borderRadius: 999,
+          borderWidth: 1,
+          borderColor: C.border,
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.1,
+          shadowRadius: 4,
+          elevation: 4,
+          padding: 2,
+        }}>
+          <NotificationBell />
         </View>
       </View>
     );
@@ -151,7 +292,7 @@ export default function MapScreen() {
         topPad={topPad}
         bottomPad={bottomPad}
         selectedDate={selectedDate}
-        onDateChange={setSelectedDate}
+        onDateChange={handleDateChange}
       />
     </View>
   );

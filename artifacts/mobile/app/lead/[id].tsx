@@ -38,7 +38,7 @@ import {
 import type { Lead, LeadMeeting, LeadDocument, LeadActivity } from "@/lib/types";
 import { PRIORITY_LABELS } from "@/lib/utils";
 import { UploadFileError, pickAndUploadFile, resolveDocURL } from "@/utils/uploadFile";
-import { reverseGeocode, openInGoogleMaps, formatCoordinates } from "@/lib/geocoding";
+import { reverseGeocode, openInGoogleMaps, formatCoordinates, getNearestLandmark } from "@/lib/geocoding";
 
 const C = Colors.light;
 
@@ -245,21 +245,14 @@ export default function LeadDetailScreen() {
     priority: "", followUpDate: "", address: "",
   });
   const [address, setAddress] = useState<string | null>(null);
+  const [landmark, setLandmark] = useState<string | null>(null);
+  const [isGeocodingLoading, setIsGeocodingLoading] = useState(false);
 
   const leadId = parseInt(id, 10);
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
   const canDeleteLead = user?.role === "admin" || user?.role === "super_admin" || user?.role === "hr";
 
-  if (isNaN(leadId)) {
-    return (
-      <View style={[styles.container, styles.center, { paddingTop: topPad }]}>
-        <Text style={styles.errorText}>Invalid lead ID</Text>
-        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 12 }}>
-          <Text style={{ color: C.brand, fontFamily: "Inter_600SemiBold" }}>Go back</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+  const isValidLeadId = !isNaN(leadId);
 
   const leadQ = useQuery({
     queryKey: ["lead", leadId],
@@ -268,34 +261,54 @@ export default function LeadDetailScreen() {
       return result ?? undefined;
     },
     staleTime: 60_000,
+    enabled: isValidLeadId,
   });
 
   const meetingsQ = useQuery<LeadMeeting[]>({
     queryKey: ["lead-meetings", leadId],
     queryFn: async () => listLeadMeetings(leadId),
     staleTime: 60_000,
+    enabled: isValidLeadId,
   });
 
   const docsQ = useQuery<LeadDocument[]>({
     queryKey: ["lead-docs", leadId],
     queryFn: async () => listLeadDocuments(leadId),
     staleTime: 60_000,
+    enabled: isValidLeadId,
   });
 
   const activitiesQ = useQuery<LeadActivity[]>({
     queryKey: ["lead-activities", leadId],
     queryFn: async () => listLeadActivities(leadId),
     staleTime: 60_000,
+    enabled: isValidLeadId,
   });
 
   useEffect(() => {
-    if (leadQ.data?.latitude && leadQ.data?.longitude) {
-      reverseGeocode(leadQ.data.latitude, leadQ.data.longitude).then(result => {
-        if (result) {
+    const lat = leadQ.data?.latitude;
+    const lng = leadQ.data?.longitude;
+    if (!lat || !lng) return;
+
+    let cancelled = false;
+    setIsGeocodingLoading(true);
+    setAddress(null); // reset on new lead
+    setLandmark(null);
+
+    reverseGeocode(lat, lng)
+      .then((result) => {
+        if (!cancelled && result?.address) {
           setAddress(result.address);
         }
-      });
-    }
+      })
+      .catch(() => { /* silently fall back to showing raw coords */ })
+      .finally(() => { if (!cancelled) setIsGeocodingLoading(false); });
+
+    getNearestLandmark(lat, lng)
+      .then((result) => { if (!cancelled && result) setLandmark(result); })
+      .catch(() => { /* landmark is optional */ });
+
+    return () => { cancelled = true; };
   }, [leadQ.data?.latitude, leadQ.data?.longitude]);
 
   const addActivityMutation = useMutation({
@@ -441,6 +454,18 @@ export default function LeadDetailScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
+  // ── Guard: invalid lead ID (must come after ALL hooks) ───────────────────
+  if (!isValidLeadId) {
+    return (
+      <View style={[styles.container, styles.center, { paddingTop: topPad }]}>
+        <Text style={styles.errorText}>Invalid lead ID</Text>
+        <TouchableOpacity onPress={() => router.back()} style={{ marginTop: 12 }}>
+          <Text style={{ color: C.brand, fontFamily: "Inter_600SemiBold" }}>Go back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   const lead = leadQ.data;
   const meetings = meetingsQ.data ?? [];
   const docs = docsQ.data ?? [];
@@ -574,9 +599,9 @@ export default function LeadDetailScreen() {
           {(["info", "meetings", "timeline", "documents"] as const).map(tab => {
             const label =
               tab === "info" ? "Info"
-              : tab === "meetings" ? `Meetings${meetings.length > 0 ? ` (${meetings.length})` : ""}`
-              : tab === "timeline" ? `Timeline${activities.length > 0 ? ` (${activities.length})` : ""}`
-              : `Docs${docs.length > 0 ? ` (${docs.length})` : ""}`;
+                : tab === "meetings" ? `Meetings${meetings.length > 0 ? ` (${meetings.length})` : ""}`
+                  : tab === "timeline" ? `Timeline${activities.length > 0 ? ` (${activities.length})` : ""}`
+                    : `Docs${docs.length > 0 ? ` (${docs.length})` : ""}`;
             return (
               <TouchableOpacity
                 key={tab}
@@ -623,14 +648,26 @@ export default function LeadDetailScreen() {
                 </View>
                 <View style={styles.locationContent}>
                   <Text style={styles.locationLabel}>GPS Location</Text>
-                  <Text style={styles.locationAddress}>
-                    {address || formatCoordinates(lead.latitude!, lead.longitude!)}
-                  </Text>
-                  {!address && (
-                    <Text style={styles.locationCoords}>
+                  {/* Primary display: landmark (same as map stops), then address, then coords */}
+                  {isGeocodingLoading && !landmark && !address ? (
+                    <Text style={styles.locationAddress}>Loading…</Text>
+                  ) : landmark ? (
+                    <>
+                      <Text style={styles.locationLandmark}>📍 {landmark}</Text>
+                      {address && address !== landmark ? (
+                        <Text style={styles.locationAddress}>{address}</Text>
+                      ) : null}
+                    </>
+                  ) : address ? (
+                    <Text style={styles.locationAddress}>{address}</Text>
+                  ) : (
+                    <Text style={styles.locationAddress}>
                       {formatCoordinates(lead.latitude!, lead.longitude!)}
                     </Text>
                   )}
+                  <Text style={styles.locationCoords}>
+                    {formatCoordinates(lead.latitude!, lead.longitude!)} · Tap to open
+                  </Text>
                 </View>
                 <Ionicons name="open-outline" size={16} color={C.textSecondary} />
               </TouchableOpacity>
@@ -854,7 +891,7 @@ export default function LeadDetailScreen() {
             <EditSectionLabel title="Lead Details" />
             <EditField label="Property Interest" value={editForm.propertyInterest} onChange={v => setEditForm(f => ({ ...f, propertyInterest: v }))} placeholder="2BHK Flat, Commercial Plot" />
             <EditField label="Budget" value={editForm.budget} onChange={v => setEditForm(f => ({ ...f, budget: v }))} placeholder="₹50L – ₹75L" />
-            
+
             {/* Follow-up Date custom picker */}
             <View style={styles.formField}>
               <Text style={styles.fieldLabel}>Follow-up Date</Text>
@@ -952,7 +989,7 @@ export default function LeadDetailScreen() {
               {addMeetingMutation.isPending ? <ActivityIndicator color={C.brand} /> : <Ionicons name="checkmark" size={24} color={C.brand} />}
             </TouchableOpacity>
           </View>
-          
+
           <Text style={styles.fieldLabel}>Date & Time</Text>
           <View style={styles.inlineSpinnersContainer}>
             {/* Inline Spinners */}
@@ -979,7 +1016,7 @@ export default function LeadDetailScreen() {
                 </TouchableOpacity>
               </View>
               <View style={dpStyles.spinnerSep} />
-              
+
               {/* Month Spinner */}
               <View style={dpStyles.spinnerCol}>
                 <Text style={dpStyles.spinnerLabel}>Month</Text>
@@ -1143,36 +1180,36 @@ export default function LeadDetailScreen() {
                 const hasUploadedObjectPath =
                   !!docForm.url && !docForm.url.startsWith("http://") && !docForm.url.startsWith("https://");
                 return (
-              <TouchableOpacity
-                style={[styles.uploadBtn, hasUploadedObjectPath && styles.uploadBtnDone]}
-                disabled={isDocUploading}
-                onPress={async () => {
-                  try {
-                    setIsDocUploading(true);
-                    const uploaded = await pickAndUploadFile("");
-                    if (!uploaded) return;
-                    setDocForm(f => ({ ...f, name: f.name || uploaded.name, url: uploaded.objectPath, mimeType: uploaded.mimeType }));
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  } catch (e) {
-                    if (e instanceof UploadFileError && e.code === "file_too_large") {
-                      Alert.alert("File Too Large", e.message);
-                    } else {
-                      const message = e instanceof Error ? e.message : "Could not upload the file. Please try again.";
-                      Alert.alert("Upload Failed", message);
-                    }
-                  } finally {
-                    setIsDocUploading(false);
-                  }
-                }}
-              >
-                {isDocUploading ? (
-                  <><ActivityIndicator color={C.brand} size="small" /><Text style={styles.uploadBtnText}>Uploading…</Text></>
-                ) : hasUploadedObjectPath ? (
-                  <><Ionicons name="checkmark-circle" size={20} color={C.success} /><Text style={[styles.uploadBtnText, { color: C.success }]}>File uploaded — tap to replace</Text></>
-                ) : (
-                  <><Ionicons name="cloud-upload-outline" size={20} color={C.brand} /><Text style={styles.uploadBtnText}>Pick a file to upload</Text></>
-                )}
-              </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.uploadBtn, hasUploadedObjectPath && styles.uploadBtnDone]}
+                    disabled={isDocUploading}
+                    onPress={async () => {
+                      try {
+                        setIsDocUploading(true);
+                        const uploaded = await pickAndUploadFile("");
+                        if (!uploaded) return;
+                        setDocForm(f => ({ ...f, name: f.name || uploaded.name, url: uploaded.objectPath, mimeType: uploaded.mimeType }));
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      } catch (e) {
+                        if (e instanceof UploadFileError && e.code === "file_too_large") {
+                          Alert.alert("File Too Large", e.message);
+                        } else {
+                          const message = e instanceof Error ? e.message : "Could not upload the file. Please try again.";
+                          Alert.alert("Upload Failed", message);
+                        }
+                      } finally {
+                        setIsDocUploading(false);
+                      }
+                    }}
+                  >
+                    {isDocUploading ? (
+                      <><ActivityIndicator color={C.brand} size="small" /><Text style={styles.uploadBtnText}>Uploading…</Text></>
+                    ) : hasUploadedObjectPath ? (
+                      <><Ionicons name="checkmark-circle" size={20} color={C.success} /><Text style={[styles.uploadBtnText, { color: C.success }]}>File uploaded — tap to replace</Text></>
+                    ) : (
+                      <><Ionicons name="cloud-upload-outline" size={20} color={C.brand} /><Text style={styles.uploadBtnText}>Pick a file to upload</Text></>
+                    )}
+                  </TouchableOpacity>
                 );
               })()}
             </View>
@@ -1210,8 +1247,8 @@ export default function LeadDetailScreen() {
             {(["note", "call", "email", "whatsapp", "site_visit", "meeting_done", "other"] as const).map(type => {
               const label =
                 type === "note" ? "Note" : type === "call" ? "Call" : type === "email" ? "Email"
-                : type === "whatsapp" ? "WhatsApp" : type === "site_visit" ? "Site Visit"
-                : type === "meeting_done" ? "Meeting Outcome" : "Other";
+                  : type === "whatsapp" ? "WhatsApp" : type === "site_visit" ? "Site Visit"
+                    : type === "meeting_done" ? "Meeting Outcome" : "Other";
               return (
                 <TouchableOpacity
                   key={type}
@@ -1544,6 +1581,7 @@ const styles = StyleSheet.create({
   },
   locationContent: { flex: 1 },
   locationLabel: { fontSize: 11, fontFamily: "Inter_500Medium", color: "#64748B" },
+  locationLandmark: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "#1E4E8A", marginBottom: 2, marginTop: 2 },
   locationAddress: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: C.text, marginTop: 2 },
   locationCoords: { fontSize: 11, fontFamily: "Inter_400Regular", color: C.textSecondary, marginTop: 2 },
   addActionBtn: {

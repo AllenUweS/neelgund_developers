@@ -18,6 +18,7 @@ export type OsmMarker = {
   color?: OsmMarkerColor;
   label?: string;
   variant?: "dot" | "number" | "vehicle";
+  bearing?: number;
 };
 
 export type OsmWebMapProps = {
@@ -54,6 +55,8 @@ function buildHTML(token: string): string {
   .mb-pin-dot { width: 26px; height: 26px; border-radius: 13px; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font: 700 12px system-ui, -apple-system, sans-serif; color: white; }
   .mb-number-pin { width: 34px; height: 34px; border-radius: 17px; background: #F4A820; color: white; display: flex; align-items: center; justify-content: center; font: 700 16px system-ui, -apple-system, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(255,255,255,0.9); }
   .mb-vehicle-pin { width: 30px; height: 30px; border-radius: 15px; background: #0B3A57; color: white; display: flex; align-items: center; justify-content: center; font: 700 14px system-ui, -apple-system, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,0.35); border: 2px solid white; }
+  .mb-playback-pin { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.45)); transition: transform 0.15s linear; }
+  .mb-playback-pin svg { width: 44px; height: 44px; }
 </style>
 </head>
 <body>
@@ -128,6 +131,14 @@ function buildHTML(token: string): string {
 
     function markerHtml(m) {
       var label = m && m.label != null ? String(m.label) : '';
+      if (m && m.id === 'playback') {
+        var bearing = m.bearing != null ? m.bearing : 0;
+        var arrowSvg = '<svg viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg">'
+          + '<circle cx="22" cy="22" r="20" fill="#073550" stroke="white" stroke-width="3"/>'
+          + '<polygon points="22,8 30,30 22,26 14,30" fill="white"/>'
+          + '</svg>';
+        return '<div class="mb-playback-pin" style="transform:rotate(' + bearing + 'deg);">' + arrowSvg + '</div>';
+      }
       if (m && m.variant === 'number') {
         return '<div class="mb-number-pin">' + label + '</div>';
       }
@@ -274,7 +285,7 @@ export function MapboxWebMap({
       zoom: typeof zoom === "number" && Number.isFinite(zoom) ? zoom : null,
       markers: safeMarkers,
       markersKey: safeMarkers
-        .map((m) => `${m.id}:${m.lat.toFixed(6)}:${m.lng.toFixed(6)}:${m.label ?? ""}:${m.variant ?? ""}:${m.color ?? ""}`)
+        .map((m) => `${m.id}:${m.lat.toFixed(6)}:${m.lng.toFixed(6)}:${m.label ?? ""}:${m.variant ?? ""}:${m.color ?? ""}:${m.bearing?.toFixed(1) ?? ""}`)
         .join("|"),
       polyline: safePolyline,
       polylineKey: polylineIdentity,

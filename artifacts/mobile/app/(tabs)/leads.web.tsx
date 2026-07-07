@@ -11,9 +11,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useAuth } from "@/context/AuthContext";
-import { listLeads } from "@/lib/api";
+import { listLeads, listManagers, listUsers, type AppUser } from "@/lib/api";
+import * as XLSX from "xlsx";
 import type { Lead } from "@/lib/types";
 import { statusColor, statusLabel, PRIORITY_COLORS, PRIORITY_LABELS, SOURCE_LABELS } from "@/lib/utils";
+import { ExportLeadsModal } from "@/components/ExportLeadsModal";
 
 const C = {
   brand: "#1B4F8A",
@@ -40,6 +42,27 @@ function formatDate(iso?: string): string {
   return new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" });
 }
 
+function timestampForFileName(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}-${hh}${min}`;
+}
+
+function downloadBlobOnWeb(fileName: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "?";
@@ -51,18 +74,32 @@ export default function LeadsWebScreen() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<StatusFilter>("all");
 
+  const [adminView, setAdminView] = useState<"teams" | "employees" | "leads">("teams");
+  const [selectedManager, setSelectedManager] = useState<{ id: string; name: string } | null>(null);
+  const [selectedEmployee, setSelectedEmployee] = useState<{ id: string; name: string } | null>(null);
+
+  const [showExportModal, setShowExportModal] = useState(false);
+
   const role = user?.role ?? "employee";
   const isTransport = role === "transport";
+  const hasNoAccess = isTransport || role === "hr";
+  const isAdmin = role === "admin" || role === "super_admin";
   const canDelete = role === "admin" || role === "super_admin" || role === "hr";
 
   const leadsQ = useQuery<Lead[]>({
     queryKey: ["leads"],
     queryFn: listLeads,
-    enabled: !isTransport,
+    enabled: !hasNoAccess,
     staleTime: 45_000,
   });
 
   const allLeads = leadsQ.data ?? [];
+  const usersQ = useQuery<AppUser[]>({
+    queryKey: ["users"],
+    queryFn: listUsers,
+    staleTime: 5 * 60_000,
+  });
+  const allUsers = usersQ.data ?? [];
 
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { all: allLeads.length };
@@ -87,16 +124,82 @@ export default function LeadsWebScreen() {
     followUp: (statusCounts.follow_up ?? 0) + (statusCounts.meeting_scheduled ?? 0),
   }), [allLeads, statusCounts]);
 
-  if (isTransport) {
+  const handleExport = useCallback((empId: string | null, startD: string, endD: string) => {
+    let toExport = allLeads;
+    if (empId) {
+      toExport = toExport.filter(l => l.employeeId === empId);
+    }
+    const fromTime = startD ? new Date(startD + "T00:00:00").getTime() : 0;
+    const toTime = endD ? new Date(endD + "T23:59:59.999").getTime() : Infinity;
+    
+    toExport = toExport.filter(l => {
+      const created = l.createdAt ? new Date(l.createdAt).getTime() : 0;
+      return created >= fromTime && created <= toTime;
+    });
+
+    if (toExport.length === 0) {
+      alert("No leads found for the selected criteria.");
+      return;
+    }
+
+    const rows = toExport.map((lead) => ({
+      "Lead Name": lead.name ?? "",
+      Phone: lead.phone ?? "",
+      Email: lead.email ?? "",
+      "Assigned Employee": lead.employeeName ?? "",
+      "Manager": lead.managerName ?? "",
+      Status: statusLabel(lead.status) ?? lead.status ?? "",
+      Source: lead.source ?? "",
+      Priority: lead.priority ?? "",
+      "Follow-up Date": lead.followUpDate ?? "",
+      Budget: lead.budget ?? "",
+      "Property Interest": lead.propertyInterest ?? "",
+      Address: lead.address ?? "",
+      "Created At": lead.createdAt ? new Date(lead.createdAt).toLocaleString("en-IN") : "",
+      "Updated At": lead.updatedAt ? new Date(lead.updatedAt).toLocaleString("en-IN") : "",
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Leads");
+    const xlsxArrayBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([xlsxArrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    downloadBlobOnWeb(`leads-export-${timestampForFileName()}.xlsx`, blob);
+  }, [allLeads]);
+
+  if (hasNoAccess) {
     return (
       <View style={styles.root}>
 
         <View style={[styles.main, { alignItems: "center", justifyContent: "center" }]}>
           <Ionicons name="lock-closed-outline" size={36} color={C.brand} />
           <Text style={{ fontSize: 18, fontWeight: "700", color: C.text, marginTop: 12 }}>Leads unavailable</Text>
-          <Text style={{ color: C.textSecondary, marginTop: 6 }}>Your role is limited to tracking.</Text>
+          <Text style={{ color: C.textSecondary, marginTop: 6 }}>{role === "hr" ? "Your role does not have access to the leads pipeline." : "Your role is limited to tracking."}</Text>
         </View>
       </View>
+    );
+  }
+
+  if (isAdmin) {
+    return (
+      <>
+      <AdminTeamViewWeb
+        leadsQ={leadsQ}
+        adminView={adminView}
+        setAdminView={setAdminView}
+        selectedManager={selectedManager}
+        setSelectedManager={setSelectedManager}
+        selectedEmployee={selectedEmployee}
+        setSelectedEmployee={setSelectedEmployee}
+        onExport={() => setShowExportModal(true)}
+      />
+      <ExportLeadsModal
+        visible={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        onExport={handleExport}
+        users={allUsers}
+      />
+      </>
     );
   }
 
@@ -111,10 +214,12 @@ export default function LeadsWebScreen() {
             <Text style={styles.pageSubtitle}>{allLeads.length} total · {filtered.length} shown</Text>
           </View>
           <View style={styles.topActions}>
-            <TouchableOpacity style={styles.exportBtn} onPress={() => {}}>
-              <Ionicons name="download-outline" size={16} color={C.brand} />
-              <Text style={styles.exportBtnText}>Export</Text>
-            </TouchableOpacity>
+            {role === "manager" ? (
+              <TouchableOpacity style={styles.exportBtn} onPress={() => setShowExportModal(true)}>
+                <Ionicons name="download-outline" size={16} color={C.brand} />
+                <Text style={styles.exportBtnText}>Export</Text>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity style={styles.addBtn} onPress={() => router.push("/add-lead")}>
               <Ionicons name="add" size={18} color="#fff" />
               <Text style={styles.addBtnText}>Add Lead</Text>
@@ -277,6 +382,13 @@ export default function LeadsWebScreen() {
           </View>
         </ScrollView>
       </View>
+
+      <ExportLeadsModal
+        visible={showExportModal}
+        onClose={() => setShowExportModal(false)}
+        onExport={handleExport}
+        users={allUsers}
+      />
     </View>
   );
 }
@@ -381,3 +493,367 @@ const styles = StyleSheet.create({
   emptyState: { paddingVertical: 50, alignItems: "center", gap: 10 },
   emptyText: { fontSize: 14, color: C.textSecondary },
 });
+
+// ── AdminTeamViewWeb ──────────────────────────────────────────────────────────
+// Three-level drill-down for Web: Teams → Employees → Leads
+
+const MANAGER_ACCENT = "#8B5CF6";
+const EMPLOYEE_ACCENT = "#1E4E8A";
+
+type AdminViewLevel = "teams" | "employees" | "leads";
+
+function AdminTeamViewWeb({
+  leadsQ,
+  adminView,
+  setAdminView,
+  selectedManager,
+  setSelectedManager,
+  selectedEmployee,
+  setSelectedEmployee,
+  onExport,
+}: {
+  leadsQ: ReturnType<typeof useQuery<Lead[]>>;
+  adminView: AdminViewLevel;
+  setAdminView: (v: AdminViewLevel) => void;
+  selectedManager: { id: string; name: string } | null;
+  setSelectedManager: (m: { id: string; name: string } | null) => void;
+  selectedEmployee: { id: string; name: string } | null;
+  setSelectedEmployee: (e: { id: string; name: string } | null) => void;
+  onExport: () => void;
+}) {
+  const allLeads = leadsQ.data ?? [];
+
+  const managersQ = useQuery<AppUser[]>({
+    queryKey: ["managers"],
+    queryFn: listManagers,
+    staleTime: 5 * 60_000,
+  });
+  const allManagers = managersQ.data ?? [];
+
+  const usersQ = useQuery<AppUser[]>({
+    queryKey: ["users"],
+    queryFn: listUsers,
+    staleTime: 5 * 60_000,
+  });
+  const allUsers = usersQ.data ?? [];
+
+  const employeesForManager = useMemo(() => {
+    if (!selectedManager) return [];
+    return allUsers
+      .filter((u) => u.managerId === selectedManager.id || u.id === selectedManager.id)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allUsers, selectedManager]);
+
+  const employeeLeads = useMemo(() => {
+    if (!selectedEmployee) return [];
+    if (selectedEmployee.id === "unassigned") {
+      return allLeads.filter(l => !allManagers.some(m => l.managerId === m.id || l.employeeId === m.id))
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+    return allLeads
+      .filter((l) => l.employeeId === selectedEmployee.id)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [allLeads, selectedEmployee, allManagers]);
+
+  const isLoading = leadsQ.isLoading || managersQ.isLoading || usersQ.isLoading;
+
+  // ── SCREEN 3: Employee's leads list ─────────────────────────────────────
+  if (adminView === "leads" && selectedEmployee && selectedManager) {
+    const wonCount = employeeLeads.filter(l => l.status === "closed_won").length;
+    const openCount = employeeLeads.filter(l => l.status !== "closed_won" && l.status !== "closed_lost").length;
+    
+    return (
+      <View style={styles.root}>
+        <View style={styles.main}>
+          <View style={styles.topBar}>
+            <View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                <TouchableOpacity onPress={() => { setAdminView("teams"); setSelectedManager(null); setSelectedEmployee(null); }}>
+                  <Text style={{ color: C.textSecondary, fontSize: 13 }}>Teams</Text>
+                </TouchableOpacity>
+                <Ionicons name="chevron-forward" size={12} color={C.textSecondary} />
+                <TouchableOpacity onPress={() => { setAdminView("employees"); setSelectedEmployee(null); }}>
+                  <Text style={{ color: C.textSecondary, fontSize: 13 }}>{selectedManager.name}</Text>
+                </TouchableOpacity>
+                <Ionicons name="chevron-forward" size={12} color={C.textSecondary} />
+                <Text style={{ color: C.text, fontSize: 13, fontWeight: "600" }}>{selectedEmployee.name}</Text>
+              </View>
+              <Text style={styles.pageTitle}>{selectedEmployee.name}'s Leads</Text>
+            </View>
+            <View style={styles.topActions}>
+              <TouchableOpacity style={[styles.addBtn, { backgroundColor: C.card, borderWidth: 1, borderColor: C.border }]} onPress={onExport}>
+                <Ionicons name="download-outline" size={18} color={C.brand} />
+                <Text style={[styles.addBtnText, { color: C.brand }]}>Export</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.addBtn} onPress={() => router.push("/add-lead")}>
+                <Ionicons name="add" size={18} color="#fff" />
+                <Text style={styles.addBtnText}>Add Lead</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+            <View style={styles.summaryRow}>
+              <View style={[styles.summaryTile, { borderLeftColor: C.brand }]}>
+                <Text style={styles.summaryVal}>{employeeLeads.length}</Text>
+                <Text style={styles.summaryLbl}>Total Leads</Text>
+              </View>
+              <View style={[styles.summaryTile, { borderLeftColor: C.warning }]}>
+                <Text style={styles.summaryVal}>{openCount}</Text>
+                <Text style={styles.summaryLbl}>Open</Text>
+              </View>
+              <View style={[styles.summaryTile, { borderLeftColor: C.success }]}>
+                <Text style={styles.summaryVal}>{wonCount}</Text>
+                <Text style={styles.summaryLbl}>Won</Text>
+              </View>
+            </View>
+            <View style={styles.tableCard}>
+              <View style={styles.tableHead}>
+                <Text style={[styles.th, { flex: 2.5 }]}>LEAD</Text>
+                <Text style={[styles.th, { flex: 1.2 }]}>PHONE</Text>
+                <Text style={[styles.th, { flex: 1 }]}>PRIORITY</Text>
+                <Text style={[styles.th, { flex: 1.2 }]}>STATUS</Text>
+                <Text style={[styles.th, { flex: 1 }]}>CREATED</Text>
+              </View>
+              {employeeLeads.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyText}>No leads assigned yet.</Text>
+                </View>
+              ) : (
+                employeeLeads.map((lead, i) => {
+                  const sc = statusColor(lead.status);
+                  const pc = lead.priority ? PRIORITY_COLORS[lead.priority] : null;
+                  return (
+                    <TouchableOpacity
+                      key={lead.id}
+                      style={[styles.tableRow, i % 2 === 1 && styles.tableRowAlt]}
+                      onPress={() => router.push({ pathname: "/lead/[id]", params: { id: lead.id } })}
+                    >
+                      <View style={[styles.td, { flex: 2.5, flexDirection: "row", alignItems: "center", gap: 10 }]}>
+                        <View style={[styles.avatar, { backgroundColor: sc + "18" }]}>
+                          <Text style={[styles.avatarText, { color: sc }]}>{initials(lead.name)}</Text>
+                        </View>
+                        <View>
+                          <Text style={styles.leadName}>{lead.name}</Text>
+                          <Text style={styles.leadProp}>{lead.propertyInterest}</Text>
+                        </View>
+                      </View>
+                      <View style={[styles.td, { flex: 1.2 }]}>
+                        <Text style={styles.tdText}>{lead.phone}</Text>
+                      </View>
+                      <View style={[styles.td, { flex: 1 }]}>
+                        {pc && lead.priority ? (
+                          <View style={[styles.priorityChip, { backgroundColor: pc + "15", borderColor: pc + "30" }]}>
+                            <View style={[styles.priorityDot, { backgroundColor: pc }]} />
+                            <Text style={[styles.priorityText, { color: pc }]}>{PRIORITY_LABELS[lead.priority] ?? lead.priority}</Text>
+                          </View>
+                        ) : <Text style={styles.tdMuted}>—</Text>}
+                      </View>
+                      <View style={[styles.td, { flex: 1.2 }]}>
+                        <View style={[styles.statusPill, { backgroundColor: sc + "15", borderColor: sc + "30" }]}>
+                          <View style={[styles.statusDot, { backgroundColor: sc }]} />
+                          <Text style={[styles.statusPillText, { color: sc }]}>{statusLabel(lead.status)}</Text>
+                        </View>
+                      </View>
+                      <View style={[styles.td, { flex: 1 }]}>
+                        <Text style={styles.tdMuted}>{formatDate(lead.createdAt)}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    );
+  }
+
+  // ── SCREEN 2: Employees in a manager's team ──────────────────────────────
+  if (adminView === "employees" && selectedManager) {
+    const teamTotalLeads = allLeads.filter(l => l.managerId === selectedManager.id || l.employeeId === selectedManager.id).length;
+    return (
+      <View style={styles.root}>
+        <View style={styles.main}>
+          <View style={styles.topBar}>
+            <View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                <TouchableOpacity onPress={() => { setAdminView("teams"); setSelectedManager(null); }}>
+                  <Text style={{ color: C.textSecondary, fontSize: 13 }}>Teams</Text>
+                </TouchableOpacity>
+                <Ionicons name="chevron-forward" size={12} color={C.textSecondary} />
+                <Text style={{ color: C.text, fontSize: 13, fontWeight: "600" }}>{selectedManager.name}</Text>
+              </View>
+              <Text style={styles.pageTitle}>{selectedManager.name}'s Team</Text>
+            </View>
+            <View style={styles.topActions}>
+              <TouchableOpacity style={[styles.addBtn, { backgroundColor: C.card, borderWidth: 1, borderColor: C.border }]} onPress={onExport}>
+                <Ionicons name="download-outline" size={18} color={C.brand} />
+                <Text style={[styles.addBtnText, { color: C.brand }]}>Export</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.addBtn} onPress={() => router.push("/add-lead")}>
+                <Ionicons name="add" size={18} color="#fff" />
+                <Text style={styles.addBtnText}>Add Lead</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+            <View style={{ gap: 12, flexDirection: "row", flexWrap: "wrap" }}>
+              {employeesForManager.map(emp => {
+                const empLeads = allLeads.filter(l => l.employeeId === emp.id);
+                const empWon = empLeads.filter(l => l.status === "closed_won").length;
+                const empOpen = empLeads.filter(l => l.status !== "closed_won" && l.status !== "closed_lost").length;
+                return (
+                  <TouchableOpacity
+                    key={emp.id}
+                    style={{
+                      width: 300, backgroundColor: C.card, borderRadius: 12, padding: 16,
+                      borderWidth: 1, borderColor: C.border, flexDirection: "row", alignItems: "center", gap: 12
+                    }}
+                    onPress={() => {
+                      setSelectedEmployee({ id: emp.id, name: emp.name });
+                      setAdminView("leads");
+                    }}
+                  >
+                    <View style={{ width: 48, height: 48, borderRadius: 12, backgroundColor: EMPLOYEE_ACCENT + "18", alignItems: "center", justifyContent: "center" }}>
+                      <Text style={{ color: EMPLOYEE_ACCENT, fontSize: 18, fontWeight: "700" }}>{emp.name.charAt(0).toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 15, fontWeight: "700", color: C.text }}>{emp.name}</Text>
+                      <Text style={{ fontSize: 12, color: C.textSecondary, marginTop: 2 }}>{empLeads.length} leads · {empWon} won</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={C.border} />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    );
+  }
+
+  // ── SCREEN 1: All manager teams ──────────────────────────────────────────
+  const totalLeads = allLeads.length;
+  const totalOpen = allLeads.filter(l => l.status !== "closed_won" && l.status !== "closed_lost").length;
+  const totalWon = allLeads.filter(l => l.status === "closed_won").length;
+  const totalHot = allLeads.filter(l => l.priority === "hot").length;
+
+  return (
+    <View style={styles.root}>
+      <View style={styles.main}>
+        <View style={styles.topBar}>
+          <View>
+            <Text style={styles.pageTitle}>Leads Pipeline</Text>
+            <Text style={styles.pageSubtitle}>{totalLeads} total · {allManagers.length} teams</Text>
+          </View>
+          <View style={styles.topActions}>
+            <TouchableOpacity style={[styles.addBtn, { backgroundColor: C.card, borderWidth: 1, borderColor: C.border }]} onPress={onExport}>
+              <Ionicons name="download-outline" size={18} color={C.brand} />
+              <Text style={[styles.addBtnText, { color: C.brand }]}>Export</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.addBtn} onPress={() => router.push("/add-lead")}>
+              <Ionicons name="add" size={18} color="#fff" />
+              <Text style={styles.addBtnText}>Add Lead</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          <View style={styles.summaryRow}>
+            <View style={[styles.summaryTile, { borderLeftColor: C.brand }]}>
+              <Text style={styles.summaryVal}>{totalLeads}</Text>
+              <Text style={styles.summaryLbl}>Total Leads</Text>
+            </View>
+            <View style={[styles.summaryTile, { borderLeftColor: C.warning }]}>
+              <Text style={styles.summaryVal}>{totalOpen}</Text>
+              <Text style={styles.summaryLbl}>Open</Text>
+            </View>
+            <View style={[styles.summaryTile, { borderLeftColor: C.danger }]}>
+              <Text style={styles.summaryVal}>{totalHot}</Text>
+              <Text style={styles.summaryLbl}>Hot</Text>
+            </View>
+            <View style={[styles.summaryTile, { borderLeftColor: C.success }]}>
+              <Text style={styles.summaryVal}>{totalWon}</Text>
+              <Text style={styles.summaryLbl}>Won</Text>
+            </View>
+          </View>
+          
+          <Text style={{ fontSize: 13, fontWeight: "700", color: C.textSecondary, marginBottom: -10, marginTop: 10 }}>MANAGER TEAMS</Text>
+          
+          <View style={{ gap: 16, flexDirection: "row", flexWrap: "wrap" }}>
+            {isLoading ? (
+              <Text style={{ color: C.textSecondary }}>Loading teams...</Text>
+            ) : (
+              allManagers.map(manager => {
+                const teamLeads = allLeads.filter(l => l.managerId === manager.id || l.employeeId === manager.id);
+                const empCount = allUsers.filter(u => u.managerId === manager.id || u.id === manager.id).length;
+                const teamWon = teamLeads.filter(l => l.status === "closed_won").length;
+                const pct = totalLeads > 0 ? Math.round((teamLeads.length / totalLeads) * 100) : 0;
+                return (
+                  <TouchableOpacity
+                    key={manager.id}
+                    style={{
+                      width: 340, backgroundColor: C.card, borderRadius: 16, padding: 20,
+                      shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8,
+                      borderWidth: 1, borderColor: C.border
+                    }}
+                    onPress={() => {
+                      setSelectedManager({ id: manager.id, name: manager.name });
+                      setAdminView("employees");
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+                      <View style={{ width: 56, height: 56, borderRadius: 16, backgroundColor: MANAGER_ACCENT + "18", alignItems: "center", justifyContent: "center" }}>
+                        <Text style={{ color: MANAGER_ACCENT, fontSize: 22, fontWeight: "700" }}>{manager.name.charAt(0).toUpperCase()}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 16, fontWeight: "700", color: C.text }}>{manager.name}'s Team</Text>
+                        <Text style={{ fontSize: 13, color: C.textSecondary, marginTop: 4 }}>{empCount} employees · {teamLeads.length} leads</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={C.border} />
+                    </View>
+                    <View style={{ marginTop: 16, height: 4, backgroundColor: C.background, borderRadius: 2, overflow: "hidden" }}>
+                      <View style={{ width: `${pct}%`, height: "100%", backgroundColor: MANAGER_ACCENT }} />
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+            
+            {/* Unassigned / Admin Leads */}
+            {(() => {
+              const unassignedLeads = allLeads.filter(l => !allManagers.some(m => l.managerId === m.id || l.employeeId === m.id));
+              if (unassignedLeads.length === 0) return null;
+              const uWon = unassignedLeads.filter(l => l.status === "closed_won").length;
+              const uHot = unassignedLeads.filter(l => l.priority === "hot").length;
+              return (
+                <TouchableOpacity
+                  style={{
+                    width: 340, backgroundColor: C.card, borderRadius: 16, padding: 20,
+                    shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8,
+                    borderWidth: 1, borderColor: C.border
+                  }}
+                  onPress={() => {
+                    setSelectedManager({ id: "unassigned", name: "System" });
+                    setSelectedEmployee({ id: "unassigned", name: "Unassigned / Admin Leads" });
+                    setAdminView("leads");
+                  }}
+                >
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+                    <View style={{ width: 56, height: 56, borderRadius: 16, backgroundColor: C.border + "40", alignItems: "center", justifyContent: "center" }}>
+                      <Text style={{ color: C.textSecondary, fontSize: 22, fontWeight: "700" }}>U</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 16, fontWeight: "700", color: C.text }}>Unassigned / Admin Leads</Text>
+                      <Text style={{ fontSize: 13, color: C.textSecondary, marginTop: 4 }}>{unassignedLeads.length} leads</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={C.border} />
+                  </View>
+                </TouchableOpacity>
+              );
+            })()}
+          </View>
+        </ScrollView>
+      </View>
+    </View>
+  );
+}

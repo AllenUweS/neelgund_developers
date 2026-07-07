@@ -110,14 +110,92 @@ export function formatWhen(iso?: string | null): string {
   });
 }
 
-// 5-minute window: matches the stop-detection threshold and the fleet-map
-// live-status check so admins see a consistent "live" signal everywhere.
-export const LIVE_THRESHOLD_MS = 5 * 60 * 1000;
+/**
+ * Three-tier presence status — driven by BOTH timestamps independently:
+ *   - lastPingAt  (heartbeat — sent every 30s regardless of movement)
+ *   - recordedAt  (GPS point  — only updated when employee moves)
+ *
+ * KEY FIX: A stationary employee stops producing new GPS points (distance
+ * filter suppresses uploads when they don't move) but continues sending
+ * heartbeats every 30 seconds. The old logic used max(recordedAt, lastPingAt)
+ * which worked fine while moving, but after 5 minutes stationary the GPS
+ * timestamp aged out and the employee showed OFFLINE even though the app was
+ * alive and sending heartbeats.
+ *
+ * New logic:
+ *   ONLINE  — heartbeat within 2 minutes  (app is alive right now)
+ *   IDLE    — heartbeat 2–10 minutes ago  (app may be backgrounded/throttled)
+ *   OFFLINE — heartbeat older than 10 min OR no heartbeat and GPS > 10 min
+ *
+ * GPS recordedAt is used as a fallback only when lastPingAt is absent
+ * (legacy rows before the native Kotlin service was deployed).
+ *
+ * NOTE: LIVE_THRESHOLD_MS kept as compat export for existing callers.
+ */
+export const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;   //  2 minutes
+export const IDLE_THRESHOLD_MS = 10 * 60 * 1000;  // 10 minutes  (raised from 5)
+export const LIVE_THRESHOLD_MS = IDLE_THRESHOLD_MS; // compat alias
 
-export function isLive(lastPingAt?: string | null): boolean {
-  if (!lastPingAt) return false;
-  return Date.now() - new Date(lastPingAt).getTime() <= LIVE_THRESHOLD_MS;
+export type PresenceStatus = "online" | "idle" | "offline";
+
+/**
+ * Returns the 3-tier presence status.
+ *
+ * Priority:
+ *  1. If lastPingAt is present, use ONLY that — it reflects the app being
+ *     alive regardless of whether the employee is moving or stationary.
+ *  2. If lastPingAt is absent (legacy data), fall back to recordedAt.
+ *
+ * This prevents the "idle→offline while stationary" bug where GPS stops
+ * updating (distance filter) but heartbeat is still firing every 30s.
+ */
+export function getPresenceStatus(
+  recordedAt?: string | null,
+  lastPingAt?: string | null,
+): PresenceStatus {
+  const now = Date.now();
+
+  // Primary: use heartbeat timestamp if available
+  if (lastPingAt) {
+    const pingMs = new Date(lastPingAt).getTime();
+    if (pingMs > 0 && pingMs <= now) {
+      const age = now - pingMs;
+      if (age <= ONLINE_THRESHOLD_MS) return "online";
+      if (age <= IDLE_THRESHOLD_MS) return "idle";
+      return "offline";
+    }
+  }
+
+  // Fallback: use GPS timestamp (legacy rows without heartbeat data)
+  if (recordedAt) {
+    const gpsMs = new Date(recordedAt).getTime();
+    if (gpsMs > 0 && gpsMs <= now) {
+      const age = now - gpsMs;
+      if (age <= ONLINE_THRESHOLD_MS) return "online";
+      if (age <= IDLE_THRESHOLD_MS) return "idle";
+      return "offline";
+    }
+  }
+
+  return "offline";
 }
+
+/** Convenience: true if status is online or idle (was recently live). */
+export function isLive(lastPingAt?: string | null, recordedAt?: string | null): boolean {
+  return getPresenceStatus(recordedAt, lastPingAt) !== "offline";
+}
+
+export const PRESENCE_COLORS: Record<PresenceStatus, string> = {
+  online: "#10B981",  // green
+  idle: "#F59E0B",  // amber
+  offline: "#9CA3AF",  // grey
+};
+
+export const PRESENCE_LABELS: Record<PresenceStatus, string> = {
+  online: "Online",
+  idle: "Idle",
+  offline: "Offline",
+};
 
 export const PRIORITY_COLORS: Record<string, string> = {
   hot: C.danger,
