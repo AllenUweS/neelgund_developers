@@ -28,7 +28,7 @@
     },
     "android": {
       "package": "com.neelgund.employeemonitor.iamjeevanhhh",
-      "versionCode": 154,
+      "versionCode": 156,
       "permissions": [
         "ACCESS_BACKGROUND_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -67,7 +67,19 @@
       "expo-font",
       "expo-web-browser",
       "expo-background-fetch",
-      "expo-task-manager"
+      "expo-task-manager",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "kotlinVersion": "2.1.20",
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "agpVersion": "8.7.3"
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
